@@ -1,0 +1,1 @@
+{"name":"vitalred-v3","version":"3.0.0","type":"module","description":"Prototipo funcional simulado de VitalRed (SPA sin backend)","scripts":{"start":"node server.js"},"dependencies":{"express":"^4.19.2"},"license":"MIT"}

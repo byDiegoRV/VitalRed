@@ -1,0 +1,60 @@
+import { get, currentUser } from './store.js';
+import { pwRules, bindPwRules, btn, card, field, toggle, flow, stepper, qrPattern, statusScreen, icon } from './ui.js';
+
+const YN = [['yes', 'SÍ'], ['no', 'NO']];
+const TRIAGE = ['¿Has tomado antibióticos, aspirinas o antiinflamatorios durante los últimos 7 días?', '¿Presentas fiebre, gripe o malestar en este momento?', '¿Has ingerido alcohol o sustancias en las últimas 48 horas?', '¿Cuentas con un ayuno de al menos 4 horas y has ingerido líquidos hoy?', '¿Dormiste al menos 6 horas anoche?'];
+const RISKS = ['¿Padeces o has padecido Hepatitis B/C, VIH, Chagas o Sífilis?', '¿Tatuajes, piercings o acupuntura en los últimos 12 meses?', '¿Cirugías mayores o transfusiones en los últimos 12 meses?'];
+const LABEL = { f: 'Femenino', m: 'Masculino', o: 'Otro', minor: 'Menor de 18', adult: '18 a 65 años', senior: 'Mayor de 65', low: 'Menos de 50 kg', ok: '50 kg o más', yes: 'SÍ', no: 'NO' };
+const fl = (n, label) => (get().inFlow ? flow(n, label) : '');
+const today = () => new Date().toLocaleDateString('es-MX', { day: 'numeric', month: 'long', year: 'numeric' });
+const countChecked = (root) => root.querySelectorAll('input[type=radio]:checked').length;
+const onChange = (root, fn) => { root.addEventListener('change', fn); return () => root.removeEventListener('change', fn); };
+
+const registerStep = (step, d) => ({
+  1: `${field('name', 'Nombre completo', 'text', 'Nombre y apellidos', d.name || '')}${field('email', 'Correo electrónico', 'email', 'tucorreo@ejemplo.com', d.email || '')}${field('password', 'Contraseña', 'password', '', d.password || '')}${pwRules()}${field('password2', 'Confirmar contraseña', 'password', '', d.password2 || '')}`,
+  2: `<div><span class="mut">Género de nacimiento / registro clínico</span>${toggle('gender', [['f', 'Femenino'], ['m', 'Masculino'], ['o', 'Otro']], d.gender)}</div><div><span class="mut">Rango de edad</span>${toggle('age', [['minor', '< 18'], ['adult', '18–65'], ['senior', '> 65']], d.age)}</div><div><span class="mut">Peso corporal</span>${toggle('weight', [['low', '< 50 kg'], ['ok', '≥ 50 kg']], d.weight)}</div><label class="field"><span>Grupo sanguíneo</span><select name="blood">${['O+', 'O-', 'A+', 'A-', 'B+', 'B-', 'AB+', 'AB-'].map((b) => `<option ${d.blood === b ? 'selected' : ''}>${b}</option>`).join('')}</select></label>`,
+  3: `${d.gender === 'f' ? `<div class="banner warn"><b>Salud femenina</b><p>Sección habilitada según tu género.</p></div><div><span class="mut">¿Embarazo, lactancia o parto en los últimos 6 meses?</span>${toggle('fem', YN, d.fem)}</div>` : ''}${RISKS.map((q, i) => `<div><span class="mut">${q}</span>${toggle('risk' + i, YN, d['risk' + i])}</div>`).join('')}`,
+  4: `<div class="summary">${[['Nombre', d.name], ['Correo', d.email], ['Género', LABEL[d.gender]], ['Edad', LABEL[d.age]], ['Peso', LABEL[d.weight]], ['Grupo sanguíneo', d.blood || 'O+']].map(([k, v]) => `<div class="item"><span class="mut">${k}</span><b>${v}</b></div>`).join('')}</div><label class="check"><input type="checkbox" name="terms" ${d.terms ? 'checked' : ''}> Acepto el aviso de privacidad. Este cuestionario es una preselección y no sustituye una evaluación médica.</label>`,
+})[step];
+
+export const flowScreens = {
+  register: {
+    render: ({ q }) => {
+      if (q.inst) return card(`<h2>Registro institucional</h2><p class="mut" style="margin:6px 0 16px">Tu rol se asigna según tu folio de verificación sanitaria.</p><form data-form="register" data-role="inst" class="stack" novalidate>${field('name', 'Nombre completo')}${field('email', 'Cédula profesional / correo')}${field('folio', 'Folio de verificación', 'text', 'MED-1024')}${field('hospital', 'Hospital / institución')}${field('password', 'Contraseña', 'password')}${pwRules()}${field('password2', 'Confirmar contraseña', 'password')}${btn('<span class="spin"></span>Crear cuenta', { type: 'submit' })}</form><p class="center mut" style="margin-top:12px"><a href="#/login">← Volver al inicio de sesión</a></p>`);
+      const r = get().reg || { step: 1, data: {} };
+      const titles = ['Datos de la cuenta', 'Datos personales', 'Control de salud (NOM-253)', 'Revisa y confirma'];
+      return card(`${stepper(['Cuenta', 'Perfil', 'Salud', 'Confirmar'], r.step - 1)}<h2>${titles[r.step - 1]}</h2><p class="mut" style="margin:4px 0 16px">Paso ${r.step} de 4 · Tus respuestas se guardan mientras avanzas.</p><form id="regForm" data-form="reg" class="stack" novalidate>${registerStep(r.step, r.data)}<div class="row" style="margin-top:8px">${r.step > 1 ? btn('← Atrás', { act: 'regBack', v: 'ghost', type: 'button' }) : ''}${btn(r.step === 4 ? 'Finalizar registro' : 'Siguiente →', { act: 'regNext', type: 'button' })}</div></form><p class="center mut" style="margin-top:12px"><a href="#/login">← Volver al inicio de sesión</a></p>`);
+    },
+    mount: (root) => bindPwRules(root),
+  },
+  'd/alert': {
+    role: 'donor',
+    render: () => { const r = get().req; if (!r) return statusScreen(icon('bell', 44), 'Sin alertas activas', 'Cuando un hospital lance un Código Rojo compatible contigo, aparecerá aquí.', btn('Recibir alerta de demostración', { act: 'demoAlert' })); return `<div class="emerg">ALERTA DE EMERGENCIA</div>${fl(1, 'RESPONDER')}${card(`<span class="chip red">CÓDIGO ROJO</span><h2 style="margin-top:10px">${r.hospital}</h2><p class="mut">Banco de Sangre · Urgencias</p><p style="margin:8px 0"><b>3.2 km · 8 min</b></p><p>Se requiere sangre ${r.blood} con prioridad inmediata.</p>`)}<div class="stack">${btn('¡Puedo donar / Aceptar!', { act: 'accept', go: 'd/triage' })}${btn('No puedo en este momento', { act: 'snooze', go: 'd/profile', v: 'ghost' })}</div>`; },
+  },
+  'd/triage': {
+    role: 'donor',
+    render: () => { const a = get().triageAns || []; return `<h2 class="ptitle">Paso 2: Pre-Triaje Médico</h2>${fl(2, 'PRE-TRIAJE')}<div class="banner info">Tus respuestas son confidenciales y serán validadas por personal médico. Es una preselección, no una evaluación médica.</div><div class="stack">${TRIAGE.map((q, i) => card(`<small class="lbl">PREGUNTA ${i + 1}</small><h3 style="margin:4px 0 10px">${q}</h3>${toggle('t' + i, YN, a[i])}`, 'q')).join('')}<p class="center mut" id="cnt">Progreso: ${a.filter(Boolean).length}/5</p>${btn('Revisar respuestas', { act: 'submitTriage', id: 'triageBtn', dis: a.filter(Boolean).length < 5 })}</div>`; },
+    mount: (root) => onChange(root, () => { const n = countChecked(root); root.querySelector('#cnt').textContent = `Progreso: ${n}/5`; root.querySelector('#triageBtn').disabled = n < 5; }),
+  },
+  'd/review': {
+    role: 'donor',
+    render: () => `<h2 class="ptitle">Revisa tus respuestas</h2>${fl(2, 'CONFIRMAR PRE-TRIAJE')}${card((get().triageAns || []).map((v, i) => `<div class="item"><span>${i + 1}. ${TRIAGE[i]}</span><b>${LABEL[v] || '—'}</b></div>`).join(''))}<div class="stack">${btn('Confirmar y continuar', { act: 'confirmTriage' })}${btn('← Corregir respuestas', { go: 'd/triage', v: 'ghost' })}</div>`,
+  },
+  'd/schedule': {
+    role: 'donor',
+    render: () => `<h2 class="ptitle">Paso 3: Agendar Cita</h2>${fl(3, 'AGENDAR')}${card(`<div class="between" style="justify-content:flex-start;gap:14px"><div class="ico">${icon('hospital', 24)}</div><div><b>Hospital General</b><br><span class="mut">Banco de Sangre</span><br><small class="mut">Av. Central 1250 · Acceso prioritario</small></div></div>`)}<small class="lbl">HOY · ${today().toUpperCase()}</small><h2 style="margin:4px 0 10px">Selecciona una hora</h2>${toggle('slot', [['08:00', '08:00 AM'], ['08:30', '08:30 AM'], ['09:00', '09:00 AM'], ['09:30', '09:30 AM']], get().slot, 'pills')}<div class="banner warn" style="margin-top:14px"><b>Cita prioritaria</b><p>Presenta tu pase QR al llegar. El equipo médico estará preparado.</p></div>${btn('Confirmar Cita Prioritaria', { act: 'confirmSlot' })}`,
+  },
+  'd/qr': {
+    role: 'donor',
+    render: () => { const a = get().myAppt; if (!a) return statusScreen(icon('calendar', 44), 'Aún no tienes citas', 'Agenda una cita al responder una alerta de Código Rojo.', btn('Ver alertas', { go: 'd/alert' })); return `<h2 class="ptitle">Paso 4: Pase de Acceso</h2>${fl(4, 'PASE')}<h2 class="center" style="color:var(--ok)">¡Cita Confirmada!</h2><div class="qr">${qrPattern(a.id)}</div><p class="center"><small class="lbl">FOLIO DE ACCESO</small><br><b style="font-size:22px">${a.id}</b></p>${card(`<b>Hospital General · Banco de Sangre</b><p class="mut">${today()} · ${a.time}</p><p class="mut">${currentUser().name} · Tipo ${currentUser().blood || 'O+'}</p>`)}<div class="stack">${btn('Simular donación completada', { act: 'finishDonation' })}${btn('Cancelar Cita', { act: 'endFlow', go: 'd/profile', v: 'ghost' })}</div>`; },
+  },
+  'd/pdf': {
+    role: 'donor',
+    render: () => { const u = currentUser(), a = get().myAppt || { id: 'VR-2026-8891', time: '08:00' }; return `<article class="doc"><header class="between"><div class="logo"><i>${icon('drop', 18)}</i>VitalRed</div><div class="right"><small class="lbl">FOLIO</small><br><b>${a.id}</b></div></header><h1>Constancia de Donación de Sangre</h1><p class="mut">Se hace constar que la persona indicada acudió a donar sangre de forma voluntaria y altruista.</p><div class="doc-grid">${[['Donante', u.name], ['Tipo sanguíneo', u.blood || 'O+'], ['Institución', 'Hospital General · Banco de Sangre'], ['Fecha', today()], ['Hora de cita', a.time], ['Motivo', 'Código Rojo · emergencia transfusional']].map(([k, v]) => `<div><small class="lbl">${k.toUpperCase()}</small><b>${v}</b></div>`).join('')}</div><div class="doc-foot"><div class="qr sm">${qrPattern(a.id)}</div><div><p>Este documento justifica la ausencia laboral/académica del donante durante el día de la donación.</p><div class="signline">Personal responsable · Banco de Sangre</div></div></div><small class="mut">Comprobante generado por VitalRed · Cumple NOM-253-SSA1-2012. Prototipo de demostración.</small></article><div class="stack noprint"><button class="btn primary" data-act="print">Imprimir / Guardar como PDF</button>${btn('Volver', { go: 'd/done', v: 'ghost' })}</div>`; },
+  },
+  'm/new': {
+    role: 'medical',
+    render: () => `<div class="band"><small>BANCO DE SANGRE · TURNO ACTIVO</small><h2>Nueva Solicitud Transfusional</h2></div><div style="height:16px"></div>${card(`<h3>Grupo sanguíneo (ABO/Rh)</h3><p class="mut" style="margin-bottom:10px">Selecciona una tipificación completa</p>${toggle('blood', ['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'].map((b) => [b, b]), '', 'four')}`)}<div class="grid two">${card(`<h3>Cantidad de unidades</h3><div class="between" style="margin-top:10px"><button class="btn ghost sm" data-act="unit" data-d="-1" aria-label="Menos">−</button><b id="units" style="font-size:28px">1</b><button class="btn sm" data-act="unit" data-d="1" aria-label="Más">+</button></div>`)}${card(`<h3>Selección actual</h3><p style="margin-top:14px" id="curSel" class="mut">Sin tipo seleccionado</p>`)}</div>${card(`<h3>Prioridad</h3><div style="margin-top:10px">${toggle('priority', [['PROGRAMADA', 'Ordinaria', '24h'], ['ALTA', 'Urgente', '2–4h'], ['CRÍTICA', 'CÓDIGO ROJO', '<30m']], '', 'three')}</div>`)}${btn('Lanzar Solicitud Transfusional', { act: 'launch', id: 'launchBtn', dis: true })}<p class="center" id="valMsg" style="margin-top:10px"><small class="mut">Selecciona grupo y prioridad para continuar</small></p>`,
+    mount: (root) => { const upd = () => { const b = root.querySelector('input[name=blood]:checked')?.value, p = root.querySelector('input[name=priority]:checked'); root.querySelector('#curSel').innerHTML = b ? `<span class="chip red">${b}</span> ${root.querySelector('#units').textContent} unidad(es)` : 'Sin tipo seleccionado'; root.querySelector('#launchBtn').disabled = !(b && p); root.querySelector('#valMsg').innerHTML = b && p ? '<small style="color:var(--ok)">✓ Grupo y prioridad validados · Solicitud lista para lanzar</small>' : '<small class="mut">Selecciona grupo y prioridad para continuar</small>'; }; root.addEventListener('selchange', upd); return () => root.removeEventListener('selchange', upd); },
+  },
+};
