@@ -37,7 +37,7 @@ function route() {
   const showBack = !!NAV_PARENT[path];
 
   const draw = () => {
-    app.innerHTML = `<div class="page"><header class="hdr"><div class="row" style="flex:none">${showBack ? `<button class="btn ghost sm" data-act="back">${icon('x', 16)} ← Volver</button>` : ''}<div class="logo" data-go="${user ? HOME[user.role] : 'splash'}"><i>${icon('drop', 18)}</i>VitalRed</div></div><div class="row" style="flex:none">${user ? `<div class="who"><b>${user.name}</b><small>${ROLES[user.role]}</small></div><button class="btn ghost sm" data-act="logout">Salir</button>` : ''}<button class="btn ghost sm" data-act="theme" aria-label="Cambiar tema">${icon(get().theme === 'dark' ? 'moon' : 'sun', 18)}</button></div></header>${user ? `<nav class="tabs">${NAV[user.role].map(([r, l, i]) => `<a href="#/${r}" class="${r === path || NAV_PARENT[path] === r ? 'on' : ''}">${icon(i, 18)}<span>${l}</span></a>`).join('')}</nav>` : ''}<main class="${screen.wide ? 'wide' : ''}">${screen.render({ q })}</main><footer>VitalRed v3.0 • Prototipo simulado • <a data-act="resetDemo">Reiniciar demo</a></footer></div>`;
+    app.innerHTML = `<div class="page"><header class="hdr"><div class="row" style="flex:none">${showBack ? `<button class="btn ghost sm" data-act="back">← Volver</button>` : ''}<div class="logo" data-go="${user ? HOME[user.role] : 'splash'}"><i>${icon('drop', 18)}</i>VitalRed</div></div><div class="row" style="flex:none">${user ? `<div class="who"><b>${user.name}</b><small>${ROLES[user.role]}</small></div><button class="btn ghost sm" data-act="logout">Salir</button>` : ''}<button class="btn ghost sm" data-act="theme" aria-label="Cambiar tema">${icon(get().theme === 'dark' ? 'moon' : 'sun', 18)}</button></div></header>${user ? `<nav class="tabs">${NAV[user.role].map(([r, l, i]) => `<a href="#/${r}" class="${r === path || NAV_PARENT[path] === r ? 'on' : ''}">${icon(i, 18)}<span>${l}</span></a>`).join('')}</nav>` : ''}<main class="${screen.wide ? 'wide' : ''}">${screen.render({ q })}</main><footer>VitalRed v3.0 • Prototipo simulado • <a data-act="resetDemo">Reiniciar demo</a></footer></div>`;
     cleanup?.();
     cleanup = screen.mount?.(app.querySelector('main'), draw) || null;
   };
@@ -313,16 +313,19 @@ const actions = {
 
 document.addEventListener('click', (e) => {
   const t = e.target.closest('[data-act],[data-go]'); if (!t || t.disabled) return;
+  const modal = e.target.closest('.modal');
+  if (modal && t.dataset.act && t.dataset.act.startsWith('sim')) {
+    modal.remove();
+  }
   if (t.dataset.act) actions[t.dataset.act]?.(t, e);
   if (t.dataset.go && t.dataset.act !== 'cancelReq') go(t.dataset.go);
-  t.dispatchEvent(new Event('selchange', { bubbles: true }));
 });
 
 document.addEventListener('change', (e) => {
-  if (e.target.dataset.act && actions[e.target.dataset.act]) {
-    actions[e.target.dataset.act](e.target, e);
+  const t = e.target.closest('[data-act]');
+  if (t && actions[t.dataset.act]) {
+    actions[t.dataset.act](t, e);
   }
-  e.target.dispatchEvent(new Event('selchange', { bubbles: true }));
 });
 
 document.addEventListener('submit', (e) => {
