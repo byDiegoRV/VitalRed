@@ -1,72 +1,171 @@
-import { get, currentUser, ROLES } from './store.js';
+import { get, set, currentUser, ROLES } from './store.js';
 import { btn, card, badge, stepper, statusScreen, icon } from './ui.js';
 
-export const DEFAULT_TRIP = { id: 'TR-9902', origin: 'Banco de Sangre Central', dest: 'Hospital General', content: '2 u. Concentrado de hematíes O-', distance: '8.4 km', eta: '18 min', status: 'asignada' };
-const SEED_HISTORY = [
-  ['TR-9897', '22 sep 2026', 'Banco de Sangre Central', 'Hospital San Rafael', '24 min', '4.6 °C', true],
-  ['TR-9891', '21 sep 2026', 'Banco de Sangre Central', 'Clínica Santa María', '31 min', '5.1 °C', true],
-  ['TR-9884', '20 sep 2026', 'Hospital del Valle', 'Banco de Sangre Central', '19 min', '7.2 °C', false],
-  ['TR-9870', '18 sep 2026', 'Banco de Sangre Central', 'Hospital Regional', '27 min', '4.3 °C', true],
-].map(([id, date, origin, dest, dur, temp, ok]) => ({ id, date, origin, dest, dur, temp, ok }));
+export const DEFAULT_TRIP = {
+  id: 'TR-9902',
+  origin: 'Banco de Sangre Central',
+  dest: 'Hospital General',
+  content: '2 u. Concentrado de hematíes O-',
+  distance: '8.4 km',
+  eta: '18 min',
+  status: 'asignada',
+  check0: false,
+  check1: false,
+  check2: false,
+  scanOk: false,
+  signOk: false,
+  photoOrigin: null,
+  photoOriginMeta: null,
+  photoDelivery: null,
+  photoDeliveryMeta: null,
+  thermalLogs: [
+    { time: '10:00', temp: 4.2, status: 'NORMAL' },
+    { time: '10:05', temp: 4.4, status: 'NORMAL' },
+    { time: '10:10', temp: 4.1, status: 'NORMAL' }
+  ]
+};
 
-export const getTrip = () => (get().trip === undefined ? DEFAULT_TRIP : get().trip);
+const SEED_HISTORY = [
+  { id: 'TR-9897', date: '22 sep 2026', origin: 'Banco de Sangre Central', dest: 'Hospital San Rafael', dur: '24 min', temp: '4.6 °C', ok: true, photoOrigin: null, photoDelivery: null, thermalLogs: [{ time: '09:00', temp: 4.6, status: 'NORMAL' }] },
+  { id: 'TR-9891', date: '21 sep 2026', origin: 'Banco de Sangre Central', dest: 'Clínica Santa María', dur: '31 min', temp: '5.1 °C', ok: true, photoOrigin: null, photoDelivery: null, thermalLogs: [{ time: '11:00', temp: 5.1, status: 'NORMAL' }] },
+  { id: 'TR-9884', date: '20 sep 2026', origin: 'Hospital del Valle', dest: 'Banco de Sangre Central', dur: '19 min', temp: '7.2 °C', ok: false, photoOrigin: null, photoDelivery: null, thermalLogs: [{ time: '14:00', temp: 7.2, status: 'ALERTA' }] },
+  { id: 'TR-9870', date: '18 sep 2026', origin: 'Banco de Sangre Central', dest: 'Hospital Regional', dur: '27 min', temp: '4.3 °C', ok: true, photoOrigin: null, photoDelivery: null, thermalLogs: [{ time: '08:30', temp: 4.3, status: 'NORMAL' }] }
+];
+
+export const getTrip = () => {
+  if (get().trip === undefined) return DEFAULT_TRIP;
+  return get().trip;
+};
+
 export const getHistory = () => get().tripHistory || SEED_HISTORY;
 
 const STEPS = ['Asignada', 'Custodia', 'En tránsito', 'Entregada'];
 const IDX = { asignada: 0, custodia: 1, transito: 2, entregada: 3 };
-const NEXT = { asignada: ['Iniciar verificación de custodia', 't/check', 'tripCustody'], custodia: ['Continuar verificación', 't/check'], transito: ['Ver ruta en curso', 't/transit'] };
+const NEXT = {
+  asignada: ['Iniciar verificación de custodia', 't/check', 'tripCustody'],
+  custodia: ['Continuar verificación', 't/check'],
+  transito: ['Ver ruta en curso', 't/transit']
+};
+
 const kv = (rows) => `<div class="kv">${rows.map(([k, v]) => `<div><small class="lbl">${k.toUpperCase()}</small><b>${v}</b></div>`).join('')}</div>`;
+
 const routeViz = (t) => `<div class="route"><div class="rp"><span class="dot"></span><div><small class="lbl">ORIGEN</small><b>${t.origin}</b></div></div><div class="rline"></div><div class="rp"><span class="dot end"></span><div><small class="lbl">DESTINO</small><b>${t.dest}</b></div></div></div>`;
+
 const noTrip = () => statusScreen(icon('truck', 44), 'Sin viaje a cargo', 'No tienes requisiciones asignadas por ahora.', btn('Simular nueva requisición', { act: 'newTrip' }));
-const historyItem = (h) => `<div class="item"><div><b>${h.origin} → ${h.dest}</b><br><small class="mut">${h.id} · ${h.date} · ${h.dur}</small></div>${badge(h.temp, h.ok ? 'ok' : 'red')}</div>`;
-const checks = (labels) => labels.map((c) => `<label class="item"><span>${c}</span><input type="checkbox" class="chk"></label>`).join('');
-const enableWhen = (root, btnSel, ready) => { const upd = () => { root.querySelector(btnSel).disabled = !ready(root); }; root.addEventListener('change', upd); root.addEventListener('selchange', upd); return () => { root.removeEventListener('change', upd); root.removeEventListener('selchange', upd); }; };
+
+const historyItem = (h) => `<div class="item"><div><b>${h.origin} → ${h.dest}</b><br><small class="mut">${h.id} • ${h.date} • ${h.dur}</small></div><div class="row" style="flex:none">${badge(h.temp, h.ok ? 'ok' : 'red')}${btn('Bitácora', { act: 'viewLogbook', id: h.id, v: 'ghost', cls: 'sm' })}</div></div>`;
 
 export const transportScreens = {
   't/home': {
     role: 'transport', wide: true,
     render: () => {
       const u = currentUser(), t = getTrip();
-      const head = `<div class="hello full"><div><h1>Hola, ${u.name.split(' ')[0]}</h1><p class="mut">Unidad ${u.unit || 'AMB-014'} · Turno activo</p></div>${badge('En servicio', 'ok')}</div>`;
+      const head = `<div class="hello full"><div><h1>Hola, ${u.name.split(' ')[0]}</h1><p class="mut">Unidad ${u.unit || 'AMB-014'} • Turno activo</p></div>${badge('En servicio', 'ok')}</div>`;
       if (!t) return head + noTrip();
       const [label, to, act] = NEXT[t.status] || NEXT.asignada;
-      return `${head}${card(`<div class="between"><small class="lbl">VIAJE A CARGO</small>${badge(STEPS[IDX[t.status]], 'warn')}</div><h2 style="margin:4px 0 14px">Requisición #${t.id}</h2>${routeViz(t)}${kv([['Contenido', t.content], ['Distancia', t.distance], ['Tiempo estimado', t.eta], ['Rango térmico', '2 – 10 °C']])}${stepper(STEPS, IDX[t.status])}${btn(label, { go: to, act })}`, 'trip')}${card(`<div class="between"><h3>Últimos recorridos</h3>${btn('Ver todos', { go: 't/history', v: 'ghost', cls: 'sm' })}</div>${getHistory().slice(0, 3).map(historyItem).join('')}`)}${card(`<h3>Recordatorios de custodia</h3>${['Verifica el sello y la integridad de la bolsa', 'Mantén el contenedor entre 2 y 10 °C', 'Registra la temperatura manual si el sensor pierde señal'].map((r) => `<div class="item"><span>${icon('check', 16)} ${r}</span></div>`).join('')}`)}`;
-    },
+      return `${head}${card(`<div class="between"><small class="lbl">VIAJE A CARGO</small>${badge(STEPS[IDX[t.status]], 'warn')}</div><h2 style="margin:4px 0 14px">Requisición #${t.id}</h2>${routeViz(t)}${kv([['Contenido', t.content], ['Distancia', t.distance], ['Tiempo estimado', t.eta], ['Rango térmico', '2 - 10 °C']])}${stepper(STEPS, IDX[t.status])}${btn(label, { go: to, act })}`, 'trip')}${card(`<div class="between"><h3>Últimos recorridos</h3>${btn('Ver todos', { go: 't/history', v: 'ghost', cls: 'sm' })}</div>${getHistory().slice(0, 3).map(historyItem).join('')}`)}${card(`<h3>Recordatorios de custodia</h3>${['Verifica el sello y la integridad de la bolsa', 'Toma fotografía obligatoria pre-despacho y entrega', 'Mantén el contenedor entre 2 y 10 °C', 'Registra la temperatura manual si el sensor pierde señal'].map((r) => `<div class="item"><span>${icon('check', 16)} ${r}</span></div>`).join('')}`)}`;
+    }
   },
   't/check': {
     role: 'transport', wide: true,
-    render: () => { const t = getTrip(); if (!t) return noTrip(); return `${stepper(STEPS, 1)}${card(`<h2>Checklist de custodia NOM-253</h2><p class="mut" style="margin:4px 0 8px">Los 3 controles son obligatorios para iniciar la ruta.</p>${checks(['Contenedor hermético y limpio', 'Temperatura entre 2 °C y 10 °C', 'Bolsa íntegra sin fugas ni coágulos'])}`)}${card(`<h3>Requisición #${t.id}</h3>${routeViz(t)}<div class="stack" style="margin-top:14px">${btn('Aceptar custodia e iniciar ruta', { act: 'tripRoute', go: 't/transit', id: 'routeBtn', dis: true })}${btn('Sensor IoT sin señal', { go: 't/manual', v: 'ghost' })}</div>`)}`; },
-    mount: (root) => enableWhen(root, '#routeBtn', (r) => [...r.querySelectorAll('.chk')].every((c) => c.checked)),
+    render: () => {
+      const t = getTrip();
+      if (!t) return noTrip();
+      const photo = t.photoOrigin;
+      const meta = t.photoOriginMeta || {};
+      const ready = Boolean(t.check0 && t.check1 && t.check2 && photo);
+      return `${stepper(STEPS, 1)}${card(`<h2>Checklist de custodia NOM-253</h2><p class="mut" style="margin:4px 0 8px">Los 3 controles y la evidencia fotográfica son obligatorios.</p><label class="item"><span>Contenedor hermético y limpio</span><input type="checkbox" data-act="toggleCheck" data-idx="0" ${t.check0 ? 'checked' : ''}></label><label class="item"><span>Temperatura entre 2 °C y 10 °C</span><input type="checkbox" data-act="toggleCheck" data-idx="1" ${t.check1 ? 'checked' : ''}></label><label class="item"><span>Bolsa íntegra sin fugas ni coágulos</span><input type="checkbox" data-act="toggleCheck" data-idx="2" ${t.check2 ? 'checked' : ''}></label>`)}${card(`<h3>Evidencia fotográfica pre-despacho</h3><p class="mut" style="margin-bottom:10px"><small>Fotografía del empaque biológico sellado en origen</small></p><div class="photo-box">${photo ? `<div class="photo-preview"><img src="${photo}" alt="Foto Origen"><div class="photo-meta"><small><b>REQ:</b> ${t.id}</small><br><small><b>STAMP:</b> ${meta.timestamp || new Date().toISOString()}</small><br><small><b>LOC:</b> ${t.origin}</small></div></div>` : '<p class="mut center" style="padding:20px 0">No se ha capturado fotografía</p>'}<div class="row" style="margin-top:10px"><label class="btn ghost sm" style="cursor:pointer;text-align:center">${icon('file', 16)} Upload / Tomar foto<input type="file" accept="image/*" data-act="uploadPhotoOrigin" style="display:none"></label>${btn('Foto de prueba', { act: 'dummyPhotoOrigin', v: 'ghost', cls: 'sm' })}</div></div>`)}${card(`<h3>Requisición #${t.id}</h3>${routeViz(t)}<div class="stack" style="margin-top:14px">${btn('Aceptar custodia e iniciar ruta', { act: 'tripRoute', go: 't/transit', id: 'routeBtn', dis: !ready })}${btn('Sensor IoT sin señal', { go: 't/manual', v: 'ghost' })}</div>`)}`;
+    }
   },
   't/manual': {
     role: 'transport',
-    render: () => { if (!getTrip()) return noTrip(); return `${stepper(STEPS, 1)}${card(`${badge('Alerta de telemetría', 'warn')}<h2 style="margin:8px 0">Sensor IoT sin señal</h2><p class="mut" style="margin-bottom:12px">Utilice el termómetro físico de la hielera y capture la lectura.</p><div class="stack"><label class="field"><span>Temperatura (°C)</span><input id="manualTemp" type="number" step="0.1" placeholder="4.8"><small class="err" id="manualTemp-err"></small></label>${btn('Guardar registro manual e iniciar ruta', { act: 'saveManual', v: 'warn' })}</div>`)}`; },
+    render: () => {
+      if (!getTrip()) return noTrip();
+      return `${stepper(STEPS, 1)}${card(`${badge('Alerta de telemetría', 'warn')}<h2 style="margin:8px 0">Sensor IoT sin señal</h2><p class="mut" style="margin-bottom:12px">Utilice el termómetro físico de la hielera y capture la lectura.</p><div class="stack"><label class="field"><span>Temperatura (°C)</span><input id="manualTemp" type="number" step="0.1" placeholder="4.8"><small class="err" id="manualTemp-err"></small></label>${btn('Guardar registro manual e iniciar ruta', { act: 'saveManual', v: 'warn' })}</div>`)}`;
+    }
   },
   't/transit': {
     role: 'transport', wide: true,
     render: () => {
-      const t = getTrip(); if (!t) return noTrip();
-      const temp = get().temp, hot = temp > 6, pos = Math.min(100, (temp / 12) * 100);
-      return `${stepper(STEPS, 2)}${card(`<div class="between"><h3>Ruta en curso</h3>${badge('GPS activo', 'ok')}</div><div class="map">Mapa de ruta en tiempo real</div>${routeViz(t)}<div class="progress"><i id="eta" style="width:35%"></i></div><small class="mut">Llegada estimada en ${t.eta}</small>`)}${card(`<h3>Cadena de frío</h3><div id="tempBox" class="temp ${hot ? 'hot' : ''}">${temp.toFixed(1)} °C</div><div class="gauge"><i id="gm" style="left:${pos}%"></i></div><div class="between"><small class="mut">0 °C</small><small class="mut">Rango 2 – 10 °C</small><small class="mut">12 °C</small></div>${hot ? '<div class="banner warn" style="margin-top:12px"><b>Temperatura fuera de rango.</b><p>Recalibra el sensor y contacta al banco de sangre.</p></div>' : ''}<div class="stack" style="margin-top:14px">${hot ? btn('Recalibrar y contactar al banco', { act: 'recal', v: 'warn' }) : ''}${btn('Simular fallo térmico', { act: 'heat', v: 'ghost' })}${btn('Llegada a destino', { go: 't/delivery' })}</div>`)}`;
+      const t = getTrip();
+      if (!t) return noTrip();
+      const temp = get().temp;
+      const mode = get().simMode || 'normal';
+      const hot = temp > 6;
+      const offline = mode === 'offline';
+      const pos = Math.min(100, Math.max(0, (temp / 12) * 100));
+      return `${stepper(STEPS, 2)}${card(`<div class="between"><h3>Ruta en curso</h3>${badge(offline ? 'Sensor Offline' : 'GPS Activo', offline ? 'warn' : 'ok')}</div><div class="map">Mapa de ruta en tiempo real</div>${routeViz(t)}<div class="progress"><i id="eta" style="width:45%"></i></div><small class="mut">Llegada estimada en ${t.eta}</small>`)}${card(`<h3>Cadena de frío (IoT)</h3>${offline ? '<div class="temp hot">SIN SEÑAL</div><div class="banner warn" style="margin-top:12px"><b>Pérdida de señal del sensor IoT.</b><p>Conmute a captura manual con termómetro físico.</p></div>' : `<div id="tempBox" class="temp ${hot ? 'hot' : ''}">${temp.toFixed(1)} °C</div><div class="gauge"><i id="gm" style="left:${pos}%"></i></div><div class="between"><small class="mut">0 °C</small><small class="mut">Rango 2 - 10 °C</small><small class="mut">12 °C</small></div>`}${hot && !offline ? '<div class="banner warn" style="margin-top:12px"><b>Temperatura fuera de rango (>6.0 °C).</b><p>Recalibra el sensor y contacta al banco de sangre.</p></div>' : ''}<div class="stack" style="margin-top:14px"><div class="row">${btn('Panel Simulador IoT', { act: 'openSimModal', v: 'ghost' })}${offline ? btn('Registro Manual', { go: 't/manual', v: 'warn' }) : ''}</div>${hot && !offline ? btn('Recalibrar y contactar al banco', { act: 'recal', v: 'warn' }) : ''}${btn('Llegada a destino', { go: 't/delivery' })}</div>`)}`;
     },
-    mount: (root) => { let pct = 35; const i = setInterval(() => { pct = Math.min(95, pct + 4); root.querySelector('#eta').style.width = pct + '%'; if (get().temp <= 6) { const v = Math.round((4 + Math.random() * 1.4) * 10) / 10; get().temp = v; root.querySelector('#tempBox').textContent = v.toFixed(1) + ' °C'; root.querySelector('#gm').style.left = (v / 12) * 100 + '%'; } }, 2500); return () => clearInterval(i); },
+    mount: (root) => {
+      let pct = 45;
+      const i = setInterval(() => {
+        pct = Math.min(95, pct + 3);
+        const etaEl = root.querySelector('#eta');
+        if (etaEl) etaEl.style.width = pct + '%';
+        const mode = get().simMode || 'normal';
+        if (mode === 'normal') {
+          const v = Math.round((4 + Math.random() * 1.2) * 10) / 10;
+          set({ temp: v });
+          const tBox = root.querySelector('#tempBox');
+          if (tBox) tBox.textContent = v.toFixed(1) + ' °C';
+          const gm = root.querySelector('#gm');
+          if (gm) gm.style.left = (v / 12) * 100 + '%';
+          const t = getTrip();
+          if (t && t.thermalLogs) {
+            const timeStr = new Date().toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' });
+            t.thermalLogs.push({ time: timeStr, temp: v, status: 'NORMAL' });
+            set({ trip: t });
+          }
+        }
+      }, 3000);
+      return () => clearInterval(i);
+    }
   },
   't/delivery': {
     role: 'transport',
-    render: () => { if (!getTrip()) return noTrip(); return `${stepper(STEPS, 3)}${card(`<h2>Entrega y recepción firmada</h2><div class="stack" style="margin-top:12px"><div class="sig" data-act="scan">${icon('clipboard', 20)}&nbsp;Escanear entrega en el área clínica</div><div class="sig" data-act="sign">${icon('user', 20)}&nbsp;Firma del personal receptor</div>${btn('Finalizar entrega', { act: 'deliver', id: 'delBtn', dis: true })}</div>`)}`; },
-    mount: (root) => enableWhen(root, '#delBtn', (r) => r.querySelectorAll('.sig.ok').length === 2),
+    render: () => {
+      const t = getTrip();
+      if (!t) return noTrip();
+      const photo = t.photoDelivery;
+      const meta = t.photoDeliveryMeta || {};
+      const ready = Boolean(t.scanOk && t.signOk && photo);
+      return `${stepper(STEPS, 3)}${card(`<h2>Entrega y recepción firmada</h2><p class="mut" style="margin:4px 0 12px">Escanear entrega, adjuntar evidencia fotográfica y obtener firma.</p><div class="stack"><div class="sig ${t.scanOk ? 'ok' : ''}" data-act="toggleDeliveryScan">${icon('clipboard', 20)}&nbsp;${t.scanOk ? 'Código verificado' : 'Escanear entrega en el área clínica'}</div><div class="sig ${t.signOk ? 'ok' : ''}" data-act="toggleDeliverySign">${icon('user', 20)}&nbsp;${t.signOk ? currentUser().name : 'Firma del personal receptor'}</div></div>`)}${card(`<h3>Evidencia fotográfica de recepción</h3><p class="mut" style="margin-bottom:10px"><small>Fotografía de la bolsa entregada en quirófano / receptor</small></p><div class="photo-box">${photo ? `<div class="photo-preview"><img src="${photo}" alt="Foto Entrega"><div class="photo-meta"><small><b>REQ:</b> ${t.id}</small><br><small><b>STAMP:</b> ${meta.timestamp || new Date().toISOString()}</small><br><small><b>DEST:</b> ${t.dest}</small></div></div>` : '<p class="mut center" style="padding:20px 0">No se ha capturado fotografía</p>'}<div class="row" style="margin-top:10px"><label class="btn ghost sm" style="cursor:pointer;text-align:center">${icon('file', 16)} Upload / Tomar foto<input type="file" accept="image/*" data-act="uploadPhotoDelivery" style="display:none"></label>${btn('Foto de prueba', { act: 'dummyPhotoDelivery', v: 'ghost', cls: 'sm' })}</div></div>`)}${card(`${btn('Finalizar entrega y ver bitácora', { act: 'deliver', id: 'delBtn', dis: !ready })}`)}`;
+    }
+  },
+  't/logbook': {
+    role: 'transport', wide: true,
+    render: () => {
+      const logData = get().activeLogbook || getTrip() || DEFAULT_TRIP;
+      const temps = (logData.thermalLogs || []).map((l) => l.temp);
+      const minTemp = temps.length ? Math.min(...temps).toFixed(1) : '4.2';
+      const maxTemp = temps.length ? Math.max(...temps).toFixed(1) : '5.1';
+      const avgTemp = temps.length ? (temps.reduce((a, b) => a + b, 0) / temps.length).toFixed(1) : '4.5';
+      const u = currentUser();
+      return `<article class="doc"><header class="between"><div class="logo"><i>${icon('drop', 18)}</i>VitalRed</div><div class="right"><small class="lbl">BITÁCORA DE RUTA</small><br><b>${logData.id || 'TR-9902'}</b></div></header><h1>Bitácora de Trazabilidad Transfusional</h1><p class="mut">Documento oficial de custodia y cadena de frío según NOM-253-SSA1-2012.</p><div class="doc-grid">${[['Operador', u?.name || 'Luis Pérez'], ['Unidad', u?.unit || 'AMB-014'], ['Origen', logData.origin], ['Destino', logData.dest], ['Contenido', logData.content], ['Estado', 'ENTREGADO']].map(([k, v]) => `<div><small class="lbl">${k.toUpperCase()}</small><b>${v}</b></div>`).join('')}</div><h3>Resumen de Telemetría Térmica</h3><div class="doc-grid">${[['Temp. Mínima', minTemp + ' °C'], ['Temp. Máxima', maxTemp + ' °C'], ['Temp. Promedio', avgTemp + ' °C'], ['Rango Norma', '2.0 °C - 10.0 °C']].map(([k, v]) => `<div><small class="lbl">${k.toUpperCase()}</small><b>${v}</b></div>`).join('')}</div><h3>Historial de Lecturas de Temperatura</h3><div class="tbl"><table><thead><tr><th>Hora</th><th>Temperatura</th><th>Estado</th></tr></thead><tbody>${(logData.thermalLogs || [{ time: '10:00', temp: 4.2, status: 'NORMAL' }]).map((l) => `<tr><td>${l.time}</td><td><b>${l.temp} °C</b></td><td>${l.status === 'NORMAL' ? '<span class="badge ok">NORMAL</span>' : '<span class="badge red">ALERTA</span>'}</td></tr>`).join('')}</tbody></table></div><h3>Evidencias Fotográficas de Custodia</h3><div class="grid two" style="margin:14px 0"><div><small class="lbl">FOTO EN ORIGEN (PRE-DESPACHO)</small>${logData.photoOrigin ? `<div class="photo-preview" style="margin-top:6px"><img src="${logData.photoOrigin}" alt="Origen"></div>` : '<p class="mut"><small>Sin foto registrada</small></p>'}</div><div><small class="lbl">FOTO EN DESTINO (RECEPCIÓN)</small>${logData.photoDelivery ? `<div class="photo-preview" style="margin-top:6px"><img src="${logData.photoDelivery}" alt="Destino"></div>` : '<p class="mut"><small>Sin foto registrada</small></p>'}</div></div><div class="doc-foot"><div><p>Certificación de recepción y conformidad en punto de entrega.</p><div class="signline">Firma Personal Receptor Hospital Destino</div></div></div><small class="mut">Generado por VitalRed • Módulo de Transporte • Trazabilidad Auditada.</small></article><div class="stack noprint" style="margin-top:16px">${btn('Descargar Bitácora PDF', { act: 'printLogbook', v: 'primary' })}${btn('Volver a Inicio', { go: 't/home', v: 'ghost' })}</div>`;
+    }
   },
   't/history': {
     role: 'transport', wide: true,
-    render: () => { const h = getHistory(), ok = h.filter((x) => x.ok).length; return `<div class="full"><h1>Últimos recorridos</h1><p class="mut">Historial de traslados de hemocomponentes</p></div><div class="grid kpi full">${[['Recorridos', h.length], ['Cadena de frío íntegra', ok], ['Incidentes térmicos', h.length - ok]].map(([l, n]) => card(`<small class="mut">${l}</small><h1>${n}</h1>`)).join('')}</div>${card(h.map(historyItem).join(''), 'full')}`; },
+    render: () => {
+      const h = getHistory();
+      const ok = h.filter((x) => x.ok).length;
+      return `<div class="full"><h1>Últimos recorridos</h1><p class="mut">Historial de traslados de hemocomponentes</p></div><div class="grid kpi full">${[['Recorridos', h.length], ['Cadena de frío íntegra', ok], ['Incidentes térmicos', h.length - ok]].map(([l, n]) => card(`<small class="mut">${l}</small><h1>${n}</h1>`)).join('')}</div>${card(h.map(historyItem).join(''), 'full')}`;
+    }
   },
-  't/profile': profileScreen('transport'),
+  't/profile': profileScreen('transport')
 };
 
 export function profileScreen(role) {
-  const rows = { transport: (u) => [['Unidad asignada', u.unit || 'AMB-014'], ['Licencia', u.license || 'LIC-458213'], ['Base', u.hospital || 'Banco Central']], medical: (u) => [['Cédula profesional', 'CED-7765421'], ['Servicio', 'Urgencias / Quirófano'], ['Hospital', u.hospital || 'Hospital General']], bank: (u) => [['Cargo', 'Dirección médica'], ['Institución', u.hospital || 'Banco Central'], ['Turno', 'Matutino']] };
+  const rows = {
+    transport: (u) => [['Unidad asignada', u.unit || 'AMB-014'], ['Licencia', u.license || 'LIC-458213'], ['Base', u.hospital || 'Banco Central']],
+    medical: (u) => [['Cédula profesional', 'CED-7765421'], ['Servicio', 'Urgencias / Quirófano'], ['Hospital', u.hospital || 'Hospital General']],
+    bank: (u) => [['Cargo', 'Dirección Médica'], ['Institución', u.hospital || 'Banco Central'], ['Turno', 'Matutino']]
+  };
   return {
     role, wide: true,
-    render: () => { const u = currentUser(), ini = u.name.split(' ').map((w) => w[0]).slice(0, 2).join(''); return `${card(`<div class="center"><div class="ring">${ini}</div><h2 style="margin-top:12px">${u.name}</h2><p class="mut">${ROLES[role]}</p>${badge('Sesión activa', 'ok')}</div>`)}${card(`<h3>Datos del perfil</h3>${[['Correo', u.email], ...rows[role](u)].map(([k, v]) => `<div class="item"><span class="mut">${k}</span><b>${v}</b></div>`).join('')}`)}${card(`<h3>Preferencias y sesión</h3><div class="stack" style="margin-top:12px">${btn(`${icon('sun', 18)}&nbsp;Cambiar tema claro / oscuro`, { act: 'theme', v: 'ghost' })}${btn('Cerrar sesión', { act: 'logout' })}</div>`)}`; },
+    render: () => {
+      const u = currentUser(), ini = u.name.split(' ').map((w) => w[0]).slice(0, 2).join('');
+      return `${card(`<div class="center"><div class="ring">${ini}</div><h2 style="margin-top:12px">${u.name}</h2><p class="mut">${ROLES[role]}</p>${badge('Sesión activa', 'ok')}</div>`)}${card(`<h3>Datos del perfil</h3>${[['Correo', u.email], ...rows[role](u)].map(([k, v]) => `<div class="item"><span class="mut">${k}</span><b>${v}</b></div>`).join('')}`)}${card(`<h3>Preferencias y sesión</h3><div class="stack" style="margin-top:12px">${btn(`${icon('sun', 18)}&nbsp;Cambiar tema claro / oscuro`, { act: 'theme', v: 'ghost' })}${btn('Cerrar sesión', { act: 'logout' })}</div>`)}`;
+    }
   };
 }
