@@ -1,0 +1,21 @@
+--- tema dark
+[DESPUES] Login: 0 violaciones
+[DESPUES] Pre-triaje: 0 violaciones
+[DESPUES] Dashboard banco: 0 violaciones
+--- tema light
+[DESPUES] Login: 0 violaciones
+[DESPUES] Pre-triaje: 1 violaciones
+     ('color-contrast', '.banner', 3.89)
+[DESPUES] Dashboard banco: 12 violaciones
+     ('color-contrast', 'section:nth-child(1) > .ok.badge', 2.2)
+     ('color-contrast', 'section:nth-child(2) > .warn.badge', 1.98)
+     ('color-contrast', 'section:nth-child(4) > .badge', 4.44)
+     ('color-contrast', '.between > .ok.badge', 2.2)
+     ('color-contrast', 'tr:nth-child(1) > td:nth-child(3) > .ok.badge', 2.2)
+     ('color-contrast', 'tr:nth-child(2) > td:nth-child(3) > .warn.badge', 1.98)
+     ('color-contrast', 'tr:nth-child(3) > td:nth-child(3) > .ok.badge', 2.2)
+     ('color-contrast', 'tr:nth-child(5) > td:nth-child(3) > .ok.badge', 2.2)
+     ('color-contrast', 'tr:nth-child(7) > td:nth-child(3) > .ok.badge', 2.2)
+     ('color-contrast', 'tr:nth-child(8) > td:nth-child(3) > .warn.badge', 1.98)
+     ('color-contrast', '.inc:nth-child(2) > .warn.badge', 1.98)
+     ('color-contrast', '.inc:nth-child(3) > .badge', 4.44)

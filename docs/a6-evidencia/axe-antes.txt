@@ -1,0 +1,33 @@
+--- tema dark
+[ANTES] Login: 2 violaciones
+     ('color-contrast', 'a[href$="#/register"]', 1.82)
+     ('color-contrast', 'a[href="#/register?inst=1"]', 1.82)
+[ANTES] Pre-triaje: 1 violaciones
+     ('color-contrast', '.on > span', 3.75)
+[ANTES] Dashboard banco: 7 violaciones
+     ('color-contrast', '.on > span', 3.75)
+     ('color-contrast', 'section:nth-child(3) > .red.badge', 3.75)
+     ('color-contrast', 'tr:nth-child(4) > td:nth-child(1) > .red.chip', 3.98)
+     ('color-contrast', 'tr:nth-child(4) > td:nth-child(3) > .red.badge', 3.75)
+     ('color-contrast', 'tr:nth-child(6) > td:nth-child(1) > .red.chip', 3.98)
+     ('color-contrast', 'tr:nth-child(6) > td:nth-child(3) > .red.badge', 3.75)
+     ('color-contrast', '.inc:nth-child(1) > .red.badge', 3.75)
+--- tema light
+[ANTES] Login: 0 violaciones
+[ANTES] Pre-triaje: 1 violaciones
+     ('color-contrast', '.banner', 3.89)
+[ANTES] Dashboard banco: 14 violaciones
+     ('color-contrast', 'section:nth-child(1) > .ok.badge', 2.2)
+     ('color-contrast', 'section:nth-child(2) > .warn.badge', 1.98)
+     ('color-contrast', 'section:nth-child(4) > .badge', 4.44)
+     ('color-contrast', '.between > .ok.badge', 2.2)
+     ('color-contrast', 'tr:nth-child(1) > td:nth-child(3) > .ok.badge', 2.2)
+     ('color-contrast', 'tr:nth-child(2) > td:nth-child(3) > .warn.badge', 1.98)
+     ('color-contrast', 'tr:nth-child(3) > td:nth-child(3) > .ok.badge', 2.2)
+     ('color-contrast', 'tr:nth-child(4) > td:nth-child(1) > .red.chip', 3.91)
+     ('color-contrast', 'tr:nth-child(5) > td:nth-child(3) > .ok.badge', 2.2)
+     ('color-contrast', 'tr:nth-child(6) > td:nth-child(1) > .red.chip', 3.91)
+     ('color-contrast', 'tr:nth-child(7) > td:nth-child(3) > .ok.badge', 2.2)
+     ('color-contrast', 'tr:nth-child(8) > td:nth-child(3) > .warn.badge', 1.98)
+     ('color-contrast', '.inc:nth-child(2) > .warn.badge', 1.98)
+     ('color-contrast', '.inc:nth-child(3) > .badge', 4.44)
