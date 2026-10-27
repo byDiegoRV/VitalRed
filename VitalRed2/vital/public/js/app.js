@@ -17,7 +17,7 @@ const NAV_PARENT = {
 };
 
 const app = document.getElementById('app');
-let cleanup = null;
+let cleanup = null, lastPath = null;
 
 function parseHash() {
   const [path, qs] = (location.hash.slice(2) || 'login').split('?');
@@ -27,6 +27,7 @@ function parseHash() {
 function route() {
   cleanup?.(); cleanup = null;
   let { path, q } = parseHash();
+  if (path !== lastPath) { lastPath = path; window.scrollTo(0, 0); }
   const user = currentUser(), screen = screens[path];
   if (!screen) return go(user ? HOME[user.role] : 'login');
   if (screen.role && (!user || user.role !== screen.role)) { toast('Inicia sesión con el rol correspondiente', 'err'); return go(user ? HOME[user.role] : 'login'); }
@@ -65,7 +66,12 @@ const enter = (user) => {
 const setTrip = (status) => set({ trip: { ...getTrip(), status } });
 const patchReq = (p) => set({ req: { ...get().req, ...p } });
 
-const sampleSvgPhoto = (title, color) => `data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="300" height="180" viewBox="0 0 300 180"><rect width="300" height="180" fill="${color}"/><text x="50%" y="45%" dominant-baseline="middle" text-anchor="middle" fill="%23ffffff" font-size="16" font-family="sans-serif">${title}</text><text x="50%" y="65%" dominant-baseline="middle" text-anchor="middle" fill="%23ffffff" font-size="12" font-family="sans-serif">VitalRed Evidence</text></svg>`;
+const sampleSvgPhoto = (title, color) => {
+  const fill = decodeURIComponent(color);
+  const esc = String(title).replace(/[<>&"']/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&#39;' }[c]));
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="300" height="180" viewBox="0 0 300 180"><rect width="300" height="180" fill="${fill}"/><text x="50%" y="45%" dominant-baseline="middle" text-anchor="middle" fill="#ffffff" font-size="16" font-family="sans-serif">${esc}</text><text x="50%" y="65%" dominant-baseline="middle" text-anchor="middle" fill="#ffffff" font-size="12" font-family="sans-serif">VitalRed Evidence</text></svg>`;
+  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+};
 
 const forms = {
   reg() { actions.regNext(); },
@@ -197,7 +203,7 @@ const actions = {
   demoAlert() { set({ req: { id: 'ST-2048', blood: 'O-', units: 2, priority: 'CRÍTICA', status: 'buscando', notified: 0, hospital: 'Hospital General' } }); go('d/alert'); },
   snooze() { set({ inFlow: false }); toast('Alerta pospuesta por 15 min', 'ok', { label: 'DESHACER (5s)', run: () => toast('Alerta reactivada') }); },
   filter(el) { set({ filter: el.dataset.v }); route(); },
-  unit(el) { const u = document.getElementById('units'); u.textContent = Math.min(9, Math.max(1, +u.textContent + +el.dataset.d)); },
+  unit(el) { const u = document.getElementById('units'); u.textContent = Math.min(9, Math.max(1, +u.textContent + +el.dataset.d)); document.querySelector('main')?.dispatchEvent(new Event('selchange')); },
   pick(el) { set({ selAppt: el.dataset.id }); route(); },
   tab(el) { set({ apptTab: el.dataset.v }); route(); },
   authorize() { const id = get().selAppt || get().appts[0].id; set({ appts: get().appts.map((a) => (a.id === id ? { ...a, state: 'Extracción' } : a)) }); toast('Ingreso autorizado'); route(); },
@@ -322,6 +328,7 @@ document.addEventListener('click', (e) => {
 });
 
 document.addEventListener('change', (e) => {
+  e.target.closest('main')?.dispatchEvent(new Event('selchange'));
   const t = e.target.closest('[data-act]');
   if (t && actions[t.dataset.act]) {
     actions[t.dataset.act](t, e);

@@ -1,5 +1,6 @@
 import { get, set, currentUser, ROLES } from './store.js';
-import { btn, card, badge, stepper, statusScreen, icon } from './ui.js';
+import { btn, card, badge, stepper, statusScreen, icon, qrPattern } from './ui.js';
+import { mountTripMap } from './maps.js';
 
 export const DEFAULT_TRIP = {
   id: 'TR-9902',
@@ -94,12 +95,14 @@ export const transportScreens = {
       const hot = temp > 6;
       const offline = mode === 'offline';
       const pos = Math.min(100, Math.max(0, (temp / 12) * 100));
-      return `${stepper(STEPS, 2)}${card(`<div class="between"><h3>Ruta en curso</h3>${badge(offline ? 'Sensor Offline' : 'GPS Activo', offline ? 'warn' : 'ok')}</div><div class="map">Mapa de ruta en tiempo real</div>${routeViz(t)}<div class="progress"><i id="eta" style="width:45%"></i></div><small class="mut">Llegada estimada en ${t.eta}</small>`)}${card(`<h3>Cadena de frío (IoT)</h3>${offline ? '<div class="temp hot">SIN SEÑAL</div><div class="banner warn" style="margin-top:12px"><b>Pérdida de señal del sensor IoT.</b><p>Conmute a captura manual con termómetro físico.</p></div>' : `<div id="tempBox" class="temp ${hot ? 'hot' : ''}">${temp.toFixed(1)} °C</div><div class="gauge"><i id="gm" style="left:${pos}%"></i></div><div class="between"><small class="mut">0 °C</small><small class="mut">Rango 2 - 10 °C</small><small class="mut">12 °C</small></div>`}${hot && !offline ? '<div class="banner warn" style="margin-top:12px"><b>Temperatura fuera de rango (>6.0 °C).</b><p>Recalibra el sensor y contacta al banco de sangre.</p></div>' : ''}<div class="stack" style="margin-top:14px"><div class="row">${btn('Panel Simulador IoT', { act: 'openSimModal', v: 'ghost' })}${offline ? btn('Registro Manual', { go: 't/manual', v: 'warn' }) : ''}</div>${hot && !offline ? btn('Recalibrar y contactar al banco', { act: 'recal', v: 'warn' }) : ''}${btn('Llegada a destino', { go: 't/delivery' })}</div>`)}`;
+      return `${stepper(STEPS, 2)}${card(`<div class="between"><h3>Ruta en curso</h3>${badge(offline ? 'Sensor Offline' : 'GPS Activo', offline ? 'warn' : 'ok')}</div><div id="tripMap" class="lmap sm" role="region" aria-label="Mapa interactivo de la ruta en curso" tabindex="0">Cargando mapa…</div>${routeViz(t)}<div class="progress"><i id="eta" style="width:45%"></i></div><small class="mut">Llegada estimada en ${t.eta}</small>`)}${card(`<h3>Cadena de frío (IoT)</h3>${offline ? '<div class="temp hot">SIN SEÑAL</div><div class="banner warn" style="margin-top:12px"><b>Pérdida de señal del sensor IoT.</b><p>Conmute a captura manual con termómetro físico.</p></div>' : `<div id="tempBox" class="temp ${hot ? 'hot' : ''}">${temp.toFixed(1)} °C</div><div class="gauge"><i id="gm" style="left:${pos}%"></i></div><div class="between"><small class="mut">0 °C</small><small class="mut">Rango 2 - 10 °C</small><small class="mut">12 °C</small></div>`}${hot && !offline ? '<div class="banner warn" style="margin-top:12px"><b>Temperatura fuera de rango (>6.0 °C).</b><p>Recalibra el sensor y contacta al banco de sangre.</p></div>' : ''}<div class="stack" style="margin-top:14px"><div class="row">${btn('Panel Simulador IoT', { act: 'openSimModal', v: 'ghost' })}${offline ? btn('Registro Manual', { go: 't/manual', v: 'warn' }) : ''}</div>${hot && !offline ? btn('Recalibrar y contactar al banco', { act: 'recal', v: 'warn' }) : ''}${btn('Llegada a destino', { go: 't/delivery' })}</div>`)}`;
     },
     mount: (root) => {
       let pct = 45;
+      const tm = mountTripMap(root, getTrip() || DEFAULT_TRIP);
       const i = setInterval(() => {
         pct = Math.min(95, pct + 3);
+        tm.setProgress(pct);
         const etaEl = root.querySelector('#eta');
         if (etaEl) etaEl.style.width = pct + '%';
         const mode = get().simMode || 'normal';
@@ -118,7 +121,7 @@ export const transportScreens = {
           }
         }
       }, 3000);
-      return () => clearInterval(i);
+      return () => { clearInterval(i); tm.destroy(); };
     }
   },
   't/delivery': {
@@ -136,12 +139,17 @@ export const transportScreens = {
     role: 'transport', wide: true,
     render: () => {
       const logData = get().activeLogbook || getTrip() || DEFAULT_TRIP;
-      const temps = (logData.thermalLogs || []).map((l) => l.temp);
-      const minTemp = temps.length ? Math.min(...temps).toFixed(1) : '4.2';
-      const maxTemp = temps.length ? Math.max(...temps).toFixed(1) : '5.1';
-      const avgTemp = temps.length ? (temps.reduce((a, b) => a + b, 0) / temps.length).toFixed(1) : '4.5';
+      const logs = logData.thermalLogs && logData.thermalLogs.length ? logData.thermalLogs : [{ time: '10:00', temp: 4.2, status: 'NORMAL' }];
+      const temps = logs.map((l) => l.temp);
+      const minTemp = Math.min(...temps).toFixed(1), maxTemp = Math.max(...temps).toFixed(1);
+      const avgTemp = (temps.reduce((a, b) => a + b, 0) / temps.length).toFixed(1);
+      const inRange = Math.min(...temps) >= 2 && Math.max(...temps) <= 10;
+      const shown = logs.slice(-8);
       const u = currentUser();
-      return `<article class="doc"><header class="between"><div class="logo"><i>${icon('drop', 18)}</i>VitalRed</div><div class="right"><small class="lbl">BITÁCORA DE RUTA</small><br><b>${logData.id || 'TR-9902'}</b></div></header><h1>Bitácora de Trazabilidad Transfusional</h1><p class="mut">Documento oficial de custodia y cadena de frío según NOM-253-SSA1-2012.</p><div class="doc-grid">${[['Operador', u?.name || 'Luis Pérez'], ['Unidad', u?.unit || 'AMB-014'], ['Origen', logData.origin], ['Destino', logData.dest], ['Contenido', logData.content], ['Estado', 'ENTREGADO']].map(([k, v]) => `<div><small class="lbl">${k.toUpperCase()}</small><b>${v}</b></div>`).join('')}</div><h3>Resumen de Telemetría Térmica</h3><div class="doc-grid">${[['Temp. Mínima', minTemp + ' °C'], ['Temp. Máxima', maxTemp + ' °C'], ['Temp. Promedio', avgTemp + ' °C'], ['Rango Norma', '2.0 °C - 10.0 °C']].map(([k, v]) => `<div><small class="lbl">${k.toUpperCase()}</small><b>${v}</b></div>`).join('')}</div><h3>Historial de Lecturas de Temperatura</h3><div class="tbl"><table><thead><tr><th>Hora</th><th>Temperatura</th><th>Estado</th></tr></thead><tbody>${(logData.thermalLogs || [{ time: '10:00', temp: 4.2, status: 'NORMAL' }]).map((l) => `<tr><td>${l.time}</td><td><b>${l.temp} °C</b></td><td>${l.status === 'NORMAL' ? '<span class="badge ok">NORMAL</span>' : '<span class="badge red">ALERTA</span>'}</td></tr>`).join('')}</tbody></table></div><h3>Evidencias Fotográficas de Custodia</h3><div class="grid two" style="margin:14px 0"><div><small class="lbl">FOTO EN ORIGEN (PRE-DESPACHO)</small>${logData.photoOrigin ? `<div class="photo-preview" style="margin-top:6px"><img src="${logData.photoOrigin}" alt="Origen"></div>` : '<p class="mut"><small>Sin foto registrada</small></p>'}</div><div><small class="lbl">FOTO EN DESTINO (RECEPCIÓN)</small>${logData.photoDelivery ? `<div class="photo-preview" style="margin-top:6px"><img src="${logData.photoDelivery}" alt="Destino"></div>` : '<p class="mut"><small>Sin foto registrada</small></p>'}</div></div><div class="doc-foot"><div><p>Certificación de recepción y conformidad en punto de entrega.</p><div class="signline">Firma Personal Receptor Hospital Destino</div></div></div><small class="mut">Generado por VitalRed • Módulo de Transporte • Trazabilidad Auditada.</small></article><div class="stack noprint" style="margin-top:16px">${btn('Descargar Bitácora PDF', { act: 'printLogbook', v: 'primary' })}${btn('Volver a Inicio', { go: 't/home', v: 'ghost' })}</div>`;
+      const fmt = (m) => (m && m.timestamp ? new Date(m.timestamp).toLocaleString('es-MX', { dateStyle: 'short', timeStyle: 'short' }) : '');
+      const photo = (src, label, alt, meta) => `<figure class="evid"><figcaption class="lbl">${label}</figcaption>${src ? `<div class="photo-preview"><img src="${src}" alt="${alt}"></div><small class="mut">${meta?.location ? meta.location + ' · ' : ''}${fmt(meta)}</small>` : '<div class="photo-empty">Sin foto registrada</div>'}</figure>`;
+      const tile = ([k, v]) => `<div><small class="lbl">${k.toUpperCase()}</small><b>${v}</b></div>`;
+      return `<article class="doc logbook"><header class="doc-head"><div class="logo"><i>${icon('drop', 18)}</i>VitalRed</div><div class="right"><small class="lbl">BITÁCORA DE RUTA</small><br><b>${logData.id || 'TR-9902'}</b></div></header><div class="doc-title"><div><h1>Bitácora de Trazabilidad Transfusional</h1><p class="mut">Documento oficial de custodia y cadena de frío según NOM-253-SSA1-2012.</p></div><div class="qr sm" role="img" aria-label="Código de verificación del documento">${qrPattern(String(logData.id || 'TR-9902'))}</div></div><div class="doc-grid">${[['Operador', u?.name || 'Luis Pérez'], ['Unidad', u?.unit || 'AMB-014'], ['Origen', logData.origin], ['Destino', logData.dest], ['Contenido', logData.content], ['Estado', 'ENTREGADO']].map(tile).join('')}</div><h3>Resumen de Telemetría Térmica ${inRange ? '<span class="badge ok">CUMPLE NORMA</span>' : '<span class="badge red">FUERA DE RANGO</span>'}</h3><div class="doc-grid cols4">${[['Temp. mínima', minTemp + ' °C'], ['Temp. máxima', maxTemp + ' °C'], ['Temp. promedio', avgTemp + ' °C'], ['Rango norma', '2.0 – 10.0 °C']].map(tile).join('')}</div><h3>Historial de Lecturas de Temperatura</h3><div class="tbl"><table><thead><tr><th>Hora</th><th>Temperatura</th><th>Estado</th></tr></thead><tbody>${shown.map((l) => `<tr><td>${l.time}</td><td><b>${l.temp} °C</b></td><td>${l.status === 'NORMAL' ? '<span class="badge ok">NORMAL</span>' : '<span class="badge red">ALERTA</span>'}</td></tr>`).join('')}</tbody></table></div>${logs.length > shown.length ? `<small class="mut">Se muestran las últimas ${shown.length} de ${logs.length} lecturas registradas.</small>` : ''}<h3>Evidencias Fotográficas de Custodia</h3><div class="grid two evid-grid">${photo(logData.photoOrigin, 'FOTO EN ORIGEN (PRE-DESPACHO)', 'Foto de origen', logData.photoOriginMeta)}${photo(logData.photoDelivery, 'FOTO EN DESTINO (RECEPCIÓN)', 'Foto de destino', logData.photoDeliveryMeta)}</div><p class="cert">Certificación de recepción y conformidad en punto de entrega.</p><div class="sigs"><div class="signline">Firma del transportista · ${u?.name || 'Luis Pérez'}</div><div class="signline">Firma Personal Receptor Hospital Destino</div></div><small class="mut">Generado por VitalRed • Módulo de Transporte • Trazabilidad Auditada.</small></article><div class="stack noprint" style="margin-top:16px">${btn('Descargar Bitácora PDF', { act: 'printLogbook', v: 'primary' })}${btn('Volver a Inicio', { go: 't/home', v: 'ghost' })}</div>`;
     }
   },
   't/history': {
