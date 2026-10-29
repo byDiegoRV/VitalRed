@@ -44,14 +44,21 @@ public/
   js/screens-transport.js  Viaje, custodia, tránsito, recorridos y perfiles
   js/screens-ui.js      Pantallas según mockups (donante, médico, banco)
   js/screens-flow.js    Registro por pasos, pre-triaje, agenda, PDF
-  js/maps.js            Mapas interactivos (Leaflet): radar de ambulancias y ruta en curso
+  js/maps.js            Mapas interactivos (Leaflet) y cálculo de rutas reales (Leaflet Routing Machine)
+  js/flow.js            Guardas de navegación: qué pantallas son accesibles según el paso del flujo
   js/app.js             Router con guardas por rol, acciones y formularios
   vendor/leaflet/       Leaflet 1.9.4 incluido en el proyecto (licencia BSD-2)
+  vendor/leaflet-routing-machine/  Plugin de rutas 3.2.12 (licencia ISC)
 server.js
 ```
 
 ## Mapas interactivos
-El **Radar de Ambulancias** (banco) y la **Ruta en curso** (transportista) usan [Leaflet](https://leafletjs.com) con mosaicos de OpenStreetMap. Se puede hacer zoom, mover el mapa, abrir el detalle de cada unidad y, en el radar, pulsar **Ver en mapa** para centrar una ambulancia. Los mosaicos necesitan Internet; sin conexión los marcadores y la ruta siguen funcionando. Las coordenadas (ficticias) están al inicio de `js/maps.js`: cámbialas para ubicar la demo en otra ciudad.
+El **Radar de Ambulancias** (banco) y la **Ruta en curso** (transportista) usan [Leaflet](https://leafletjs.com) con mosaicos de OpenStreetMap. Se puede hacer zoom, mover el mapa, abrir el detalle de cada unidad y, en el radar, pulsar **Ver en mapa** para centrar una ambulancia. Los mosaicos y las rutas necesitan Internet: la ruta se calcula por calles con el plugin Leaflet Routing Machine usando el servicio público OSRM (datos de OpenStreetMap), de donde salen la distancia y el tiempo mostrados. Sin conexión se dibuja una ruta simulada y la pantalla lo avisa. El servidor público de OSRM es solo para demostración (máximo ~1 petición por segundo); para uso real conviene alojar tu propio OSRM y cambiar `OSRM` en `js/maps.js`. Las coordenadas (ficticias) están al inicio de `js/maps.js`: cámbialas para ubicar la demo en otra ciudad.
+
+## Navegación y confirmaciones
+- **Guardas de flujo** (`js/flow.js`): no se puede abrir una pantalla que ya no corresponde (por ejemplo, volver al pre-triaje tras confirmarlo, o a la ruta de un viaje ya entregado). Se redirige a la pantalla correcta con un aviso. Una dirección inexistente muestra la pantalla 404 a los usuarios con sesión.
+- **Confirmaciones**: las acciones críticas (lanzar Código Rojo, forzar una asignación, iniciar una campaña, finalizar una entrega, etc.) abren una ventana de confirmación; las más delicadas exigen marcar *Estoy consciente de…*. La ventana es accesible (foco atrapado, Esc cierra).
+- Banco: Forzar asignación, campaña de alerta (visible para los donantes), reservas de inventario y exportación real a CSV/PDF.
 
 ## Accesibilidad
 Los colores de texto cumplen WCAG 2.1 AA (contraste 4.5:1) en tema claro y oscuro, y las pantallas se revisaron con axe-core. Ver `docs/evidencia-ronda2/`.
