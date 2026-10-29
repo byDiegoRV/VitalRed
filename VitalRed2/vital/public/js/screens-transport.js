@@ -1,6 +1,6 @@
 import { get, set, currentUser, ROLES } from './store.js';
 import { btn, card, badge, stepper, statusScreen, icon, qrPattern } from './ui.js';
-import { mountTripMap } from './maps.js';
+import { mountTripMap, fmtKm, fmtMin } from './maps.js';
 
 export const DEFAULT_TRIP = {
   id: 'TR-9902',
@@ -95,14 +95,23 @@ export const transportScreens = {
       const hot = temp > 6;
       const offline = mode === 'offline';
       const pos = Math.min(100, Math.max(0, (temp / 12) * 100));
-      return `${stepper(STEPS, 2)}${card(`<div class="between"><h3>Ruta en curso</h3>${badge(offline ? 'Sensor Offline' : 'GPS Activo', offline ? 'warn' : 'ok')}</div><div id="tripMap" class="lmap sm" role="region" aria-label="Mapa interactivo de la ruta en curso" tabindex="0">Cargando mapa…</div>${routeViz(t)}<div class="progress"><i id="eta" style="width:45%"></i></div><small class="mut">Llegada estimada en ${t.eta}</small>`)}${card(`<h3>Cadena de frío (IoT)</h3>${offline ? '<div class="temp hot">SIN SEÑAL</div><div class="banner warn" style="margin-top:12px"><b>Pérdida de señal del sensor IoT.</b><p>Conmute a captura manual con termómetro físico.</p></div>' : `<div id="tempBox" class="temp ${hot ? 'hot' : ''}">${temp.toFixed(1)} °C</div><div class="gauge"><i id="gm" style="left:${pos}%"></i></div><div class="between"><small class="mut">0 °C</small><small class="mut">Rango 2 - 10 °C</small><small class="mut">12 °C</small></div>`}${hot && !offline ? '<div class="banner warn" style="margin-top:12px"><b>Temperatura fuera de rango (>6.0 °C).</b><p>Recalibra el sensor y contacta al banco de sangre.</p></div>' : ''}<div class="stack" style="margin-top:14px"><div class="row">${btn('Panel Simulador IoT', { act: 'openSimModal', v: 'ghost' })}${offline ? btn('Registro Manual', { go: 't/manual', v: 'warn' }) : ''}</div>${hot && !offline ? btn('Recalibrar y contactar al banco', { act: 'recal', v: 'warn' }) : ''}${btn('Llegada a destino', { go: 't/delivery' })}</div>`)}`;
+      return `${stepper(STEPS, 2)}${card(`<div class="between"><h3>Ruta en curso</h3>${badge(offline ? 'Sensor Offline' : 'GPS Activo', offline ? 'warn' : 'ok')}</div><div id="tripMap" class="lmap sm" role="region" aria-label="Mapa interactivo de la ruta en curso" tabindex="0">Cargando mapa…</div>${routeViz(t)}<div class="progress"><i id="eta" style="width:45%"></i></div><small class="mut">Llegada estimada en <b id="tripEta">${t.eta}</b> · <span id="tripDist">${t.distance}</span></small><p class="mut" id="routeSrc" role="status"><small>Calculando ruta…</small></p>`)}${card(`<h3>Cadena de frío (IoT)</h3>${offline ? '<div class="temp hot">SIN SEÑAL</div><div class="banner warn" style="margin-top:12px"><b>Pérdida de señal del sensor IoT.</b><p>Conmute a captura manual con termómetro físico.</p></div>' : `<div id="tempBox" class="temp ${hot ? 'hot' : ''}">${temp.toFixed(1)} °C</div><div class="gauge"><i id="gm" style="left:${pos}%"></i></div><div class="between"><small class="mut">0 °C</small><small class="mut">Rango 2 - 10 °C</small><small class="mut">12 °C</small></div>`}${hot && !offline ? '<div class="banner warn" style="margin-top:12px"><b>Temperatura fuera de rango (>6.0 °C).</b><p>Recalibra el sensor y contacta al banco de sangre.</p></div>' : ''}<div class="stack" style="margin-top:14px"><div class="row">${btn('Panel Simulador IoT', { act: 'openSimModal', v: 'ghost' })}${offline ? btn('Registro Manual', { go: 't/manual', v: 'warn' }) : ''}</div>${hot && !offline ? btn('Recalibrar y contactar al banco', { act: 'recal', v: 'warn' }) : ''}${btn('Llegada a destino', { go: 't/delivery' })}</div>`)}`;
     },
     mount: (root) => {
       let pct = 45;
-      const tm = mountTripMap(root, getTrip() || DEFAULT_TRIP);
+      let route = null;
+      const showEta = () => { const e = root.querySelector('#tripEta'); if (e && route) e.textContent = fmtMin(route.min * (1 - pct / 100)); };
+      const tm = mountTripMap(root, getTrip() || DEFAULT_TRIP, { onRoute: (r) => {
+        route = r;
+        const d = root.querySelector('#tripDist'), s = root.querySelector('#routeSrc');
+        if (d) d.textContent = fmtKm(r.km);
+        if (s) s.textContent = r.real ? 'Ruta calculada por calles con OSRM (OpenStreetMap): distancia y tiempo reales.' : 'Sin conexión al servicio de rutas: ruta y tiempo estimados.';
+        set({ trip: { ...getTrip(), distance: fmtKm(r.km), eta: fmtMin(r.min) } });
+        showEta();
+      } });
       const i = setInterval(() => {
         pct = Math.min(95, pct + 3);
-        tm.setProgress(pct);
+        tm.setProgress(pct); showEta();
         const etaEl = root.querySelector('#eta');
         if (etaEl) etaEl.style.width = pct + '%';
         const mode = get().simMode || 'normal';

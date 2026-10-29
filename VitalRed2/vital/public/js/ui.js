@@ -26,7 +26,20 @@ const ICONS = {
   heart: '<path d="M12 21s-8-5.5-8-11a4.5 4.5 0 0 1 8-2.5A4.5 4.5 0 0 1 20 10c0 5.5-8 11-8 11z"/>',
 };
 export const icon = (name, size = 20) => `<svg class="ic" width="${size}" height="${size}" viewBox="0 0 24 24" aria-hidden="true">${ICONS[name] || ''}</svg>`;
-export const go = (route) => { location.hash = '#/' + route; };
+// Navega a una ruta; si ya estás en ella, vuelve a dibujarla (así los cambios de estado se reflejan).
+export const go = (route, replace = false) => {
+  const target = '#/' + route;
+  if (location.hash === target) return dispatchEvent(new Event('hashchange'));
+  if (replace) location.replace(target); else location.hash = target;
+};
+export const esc = (v) => String(v ?? '').replace(/[<>&"']/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&#39;' }[c]));
+// Descarga un archivo generado en el navegador (CSV, etc.)
+export function download(name, content, type = 'text/csv;charset=utf-8') {
+  const url = URL.createObjectURL(new Blob(['\ufeff' + content], { type }));
+  const a = document.createElement('a');
+  a.href = url; a.download = name; document.body.append(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
 const attrs = (o) => `${o.go ? `data-go="${o.go}"` : ''} ${o.act ? `data-act="${o.act}"` : ''} ${o.id ? `id="${o.id}"` : ''} ${o.dis ? 'disabled' : ''} ${o.type ? `type="${o.type}"` : ''}`;
 export const btn = (label, o = {}) => `<button class="btn ${o.v || 'primary'} ${o.cls || ''}" ${attrs(o)}>${label}</button>`;
 export const card = (inner, cls = '') => `<section class="card ${cls}">${inner}</section>`;
@@ -52,12 +65,34 @@ export function toast(message, type = 'ok', action) {
   document.getElementById('toasts').append(el);
   setTimeout(() => el.remove(), action ? 5000 : 3200);
 }
-export function confirmModal(title, text, onOk, okLabel = 'Confirmar') {
+// Confirmación accesible: foco atrapado, Esc cierra y, si se pasa opts.ack, exige marcar la casilla "estoy consciente".
+export function confirmModal(title, text, onOk, okLabel = 'Confirmar', opts = {}) {
+  const prev = document.activeElement;
   const m = document.createElement('div');
   m.className = 'modal';
-  m.innerHTML = card(`<h2>${title}</h2><p class="mut" style="margin:8px 0 16px">${text}</p><div class="row"><button class="btn ghost" data-x>Volver</button><button class="btn primary" data-ok>${okLabel}</button></div>`);
-  m.onclick = (e) => { if (e.target === m || e.target.dataset.x !== undefined) m.remove(); if (e.target.dataset.ok !== undefined) { m.remove(); onOk(); } };
+  m.setAttribute('role', 'alertdialog'); m.setAttribute('aria-modal', 'true');
+  m.setAttribute('aria-labelledby', 'modalTitle'); m.setAttribute('aria-describedby', 'modalText');
+  const ack = opts.ack ? `<label class="ack"><input type="checkbox" id="modalAck"><span>${opts.ack}</span></label>` : '';
+  m.innerHTML = card(`<h2 id="modalTitle">${title}</h2><p class="mut" id="modalText" style="margin:8px 0 16px">${text}</p>${ack}<div class="row"><button class="btn ghost" data-x>${opts.cancel || 'Volver'}</button><button class="btn primary" data-ok${opts.ack ? ' disabled' : ''}>${okLabel}</button></div>`);
+  const ok = m.querySelector('[data-ok]'), box = m.querySelector('#modalAck');
+  const onKey = (e) => {
+    if (e.key === 'Escape') { e.stopPropagation(); close(); return; }
+    if (e.key !== 'Tab') return;
+    const f = [...m.querySelectorAll('input,button:not([disabled])')];
+    if (!f.length) return;
+    const first = f[0], last = f[f.length - 1];
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+  };
+  function close() { document.removeEventListener('keydown', onKey, true); m.remove(); if (prev && prev.isConnected) prev.focus(); }
+  box?.addEventListener('change', () => { ok.disabled = !box.checked; });
+  m.onclick = (e) => {
+    if (e.target === m || e.target.dataset.x !== undefined) close();
+    if (e.target.dataset.ok !== undefined && !ok.disabled) { close(); onOk(); }
+  };
+  document.addEventListener('keydown', onKey, true);
   document.body.append(m);
+  (box || m.querySelector('[data-x]')).focus();
 }
 export const qrPattern = (seed) => Array.from({ length: 121 }, (_, i) => `<i class="${((i * 7 + seed.length * (i % 5) + i * i) % 3) ? 'w' : ''}"></i>`).join('');
 

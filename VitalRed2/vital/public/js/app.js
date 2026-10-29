@@ -1,7 +1,9 @@
 import { get, set, reset, currentUser, HOME, ROLES } from './store.js';
 import { screens } from './screens.js';
 import { DEFAULT_TRIP, getTrip, getHistory } from './screens-transport.js';
-import { passwordIssues, go, toast, confirmModal, icon } from './ui.js';
+import { passwordIssues, go, toast, confirmModal, icon, esc, download } from './ui.js';
+import { guard } from './flow.js';
+import { stockNow, RESERVABLE, reportCsv, reportDoc } from './screens-ui.js';
 
 const NAV = {
   donor: [['d/home', 'Inicio', 'home'], ['d/alert', 'Donar', 'drop'], ['d/qr', 'Citas', 'calendar'], ['d/profile', 'Perfil', 'user']],
@@ -28,10 +30,12 @@ function route() {
   cleanup?.(); cleanup = null;
   let { path, q } = parseHash();
   if (path !== lastPath) { lastPath = path; window.scrollTo(0, 0); }
-  const user = currentUser(), screen = screens[path];
-  if (!screen) return go(user ? HOME[user.role] : 'login');
+  const user = currentUser(), screen = screens[path] || (user ? screens.notfound : null);
+  if (!screen) return go('login');
   if (screen.role && (!user || user.role !== screen.role)) { toast('Inicia sesión con el rol correspondiente', 'err'); return go(user ? HOME[user.role] : 'login'); }
   if (!screen.role && user && ['login', 'register'].includes(path)) return go(HOME[user.role]);
+  const blocked = user && guard(path, get());
+  if (blocked) { toast(blocked[1], 'err'); return go(blocked[0], true); }
   document.documentElement.dataset.theme = get().theme;
   document.body.dataset.role = user?.role || 'guest';
 
@@ -195,8 +199,45 @@ const actions = {
     el.setAttribute('aria-pressed', show);
     el.setAttribute('aria-label', show ? 'Ocultar contraseña' : 'Mostrar contraseña');
   },
-  accept() { set({ inFlow: true }); },
-  endFlow() { set({ inFlow: false }); toast('Cita cancelada'); },
+  accept() { set({ inFlow: true, triage: null, triageAns: null }); },
+  startTriage() { set({ inFlow: true, triage: null, triageAns: null }); },
+  endFlow() { const my = get().myAppt; set({ inFlow: false, triage: null, triageAns: null, myAppt: null, appts: get().appts.filter((a) => !my || a.id !== my.id) }); toast('Cita cancelada'); },
+  forceAssign(el) {
+    const id = el.dataset.id, req = get().req?.id || 'ST-2048';
+    set({ fleet: { ...(get().fleet || {}), [id]: { state: 'Asignada', req } } });
+    toast(`${id} asignada a la solicitud ${req}`); route();
+  },
+  releaseUnit(el) {
+    const f = { ...(get().fleet || {}) }; delete f[el.dataset.id];
+    set({ fleet: f }); toast(`${el.dataset.id} liberada`); route();
+  },
+  startCampaign() {
+    const groups = stockNow().filter(([, , st]) => st === 'CRÍTICO').map(([g]) => g);
+    const blood = groups.length ? groups : ['O-'];
+    set({ campaign: { blood, at: new Date().toISOString(), notified: blood.length * 60 + 12 } });
+    toast(`Campaña iniciada para ${blood.join(', ')}`); route();
+  },
+  endCampaign() { set({ campaign: null }); toast('Campaña finalizada'); route(); },
+  reserveReq(el) {
+    const id = el.dataset.id, r = RESERVABLE.find((x) => x.id === id);
+    if (!r) return;
+    const cur = stockNow().find(([g]) => g === r.blood)?.[1] ?? 0;
+    if (cur < r.units) return toast(`No hay ${r.units} unidades ${r.blood} disponibles`, 'err');
+    set({ reserved: [...(get().reserved || []), id] }); toast(`${r.units} unidades ${r.blood} reservadas`); route();
+  },
+  releaseReq(el) { set({ reserved: (get().reserved || []).filter((x) => x !== el.dataset.id) }); toast('Reserva liberada'); route(); },
+  detailReq(el) {
+    const r = RESERVABLE.find((x) => x.id === el.dataset.id); if (!r) return;
+    const held = (get().reserved || []).includes(r.id);
+    confirmModal(`Solicitud ${esc(r.id)}`, `<b>${esc(r.hospital)}</b><br>${esc(r.reason)}<br>Reclama: ${r.units} unidades ${esc(r.blood)}.<br>Estado: ${held ? 'Reservada' : 'Pendiente de preparar'}.`, () => { if (!held) actions.reserveReq(el); }, held ? 'Entendido' : 'Aceptar y preparar', { cancel: 'Cerrar' });
+  },
+  exportCsv() { download(`reporte-trazabilidad-${new Date().toISOString().slice(0, 10)}.csv`, reportCsv()); toast('Reporte CSV descargado'); },
+  exportPdf() {
+    const sheet = document.createElement('div'); sheet.className = 'print-sheet'; sheet.innerHTML = reportDoc();
+    document.body.append(sheet); document.body.classList.add('printing-sheet');
+    const end = () => { sheet.remove(); document.body.classList.remove('printing-sheet'); removeEventListener('afterprint', end); };
+    addEventListener('afterprint', end); setTimeout(end, 60000); window.print();
+  },
   theme() { set({ theme: get().theme === 'dark' ? 'light' : 'dark' }); route(); },
   logout() { confirmModal('Cerrar sesión', '¿Deseas salir de VitalRed?', () => { set({ session: null }); toast('Sesión cerrada'); go('login'); }); },
   resetDemo() { confirmModal('Reiniciar demo', 'Se borrarán usuarios y datos creados.', () => { reset(); go('login'); route(); }); },
@@ -317,14 +358,48 @@ const actions = {
   export() { toast('Reporte NOM-253 exportado (simulado)'); }
 };
 
+// Acciones que piden confirmación (y, si es crítica, una declaración "estoy consciente").
+// Devuelve null cuando todavía no corresponde confirmar (p. ej. falta un dato) para que la acción muestre su propio aviso.
+const CONFIRMS = {
+  accept: () => ({ title: '¿Atender esta alerta?', text: 'Iniciarás el pre-triaje médico y podrás agendar tu donación.', ok: 'Sí, quiero donar', ack: 'Estoy consciente de que mi aptitud será validada por personal médico antes de donar.' }),
+  confirmTriage: () => ({ title: '¿Confirmas tus respuestas?', text: 'Una vez confirmadas no podrás modificarlas en este proceso.', ok: 'Confirmar respuestas', ack: 'Declaro que mis respuestas son verídicas y entiendo que ocultar información puede poner en riesgo a un paciente.' }),
+  confirmSlot: () => (sel('slot') ? { title: '¿Confirmar tu cita?', text: `Se agendará tu donación a las <b>${esc(sel('slot'))}</b>.`, ok: 'Confirmar cita' } : null),
+  endFlow: () => ({ title: '¿Cancelar tu cita?', text: 'Se liberará tu horario y tendrás que agendar de nuevo.', ok: 'Cancelar cita', cancel: 'Conservar cita' }),
+  finishDonation: () => ({ title: '¿Finalizar la donación?', text: 'Se registrará tu donación y se generará tu justificante.', ok: 'Finalizar' }),
+  back: () => (['d/triage', 'd/review', 'd/schedule'].includes(parseHash().path) ? { title: '¿Salir de este proceso?', text: 'Tu avance en este paso se perderá.', ok: 'Salir', cancel: 'Seguir aquí' } : null),
+  launch: () => {
+    const crit = sel('priority') === 'CRÍTICA', cur = get().req, replacing = cur && !['cancelada', 'programada'].includes(cur.status);
+    return { title: crit ? '¿Lanzar CÓDIGO ROJO?' : '¿Lanzar la solicitud?', text: `Se alertará a donantes compatibles (${esc(sel('blood'))}) y al banco de sangre.${replacing ? ` <b>La solicitud ${esc(cur.id)} activa será reemplazada.</b>` : ''}`, ok: crit ? 'Lanzar alerta' : 'Lanzar solicitud', ack: crit ? 'Estoy consciente de que es una alerta de emergencia y de que los datos del paciente son correctos.' : undefined };
+  },
+  retry: () => ({ title: '¿Ampliar el radio a 15 km?', text: 'Se notificará a más donantes, incluso fuera de la zona inicial.', ok: 'Ampliar radio' }),
+  external: () => ({ title: '¿Enviar a un banco externo?', text: 'La solicitud saldrá de la red local de VitalRed.', ok: 'Enviar solicitud' }),
+  authorize: () => { const a = get().appts.find((x) => x.id === (get().selAppt || get().appts[0].id)); return { title: '¿Autorizar el ingreso?', text: `Se registrará el ingreso de <b>${esc(a?.name)}</b> a extracción.`, ok: 'Autorizar ingreso' }; },
+  reject: () => ({ title: '¿Rechazar el acceso?', text: 'El donante no podrá continuar con su donación.', ok: 'Rechazar acceso', ack: 'Estoy consciente de que esta decisión queda registrada en la bitácora.' }),
+  forceAssign: (el) => ({ title: `¿Forzar la asignación de ${esc(el.dataset.id)}?`, text: 'Se omitirá la asignación automática por cercanía y la unidad quedará asignada a la solicitud activa.', ok: 'Forzar asignación', ack: 'Estoy consciente de que esta acción interrumpe la asignación automática del sistema.' }),
+  releaseUnit: (el) => ({ title: `¿Liberar ${esc(el.dataset.id)}?`, text: 'La unidad volverá a estar disponible para nuevas solicitudes.', ok: 'Liberar unidad' }),
+  startCampaign: () => { const g = stockNow().filter(([, , st]) => st === 'CRÍTICO').map(([x]) => x); return { title: '¿Iniciar campaña de alerta?', text: `Se notificará a los donantes de los grupos en escasez: <b>${esc(g.join(', ') || 'O-')}</b>.`, ok: 'Iniciar campaña', ack: 'Estoy consciente de que se enviará una notificación a todos los donantes compatibles.' }; },
+  endCampaign: () => ({ title: '¿Finalizar la campaña?', text: 'Los donantes dejarán de ver la convocatoria.', ok: 'Finalizar campaña' }),
+  reserveReq: (el) => { const r = RESERVABLE.find((x) => x.id === el.dataset.id); return { title: '¿Aceptar y preparar la solicitud?', text: `Se reservarán <b>${r?.units} unidades ${esc(r?.blood)}</b> del inventario para ${esc(r?.hospital)}.`, ok: 'Reservar unidades' }; },
+  releaseReq: () => ({ title: '¿Liberar la reserva?', text: 'Las unidades volverán al inventario disponible.', ok: 'Liberar reserva' }),
+  tripRoute: () => ({ title: '¿Iniciar el traslado?', text: 'Se activará la telemetría de cadena de frío y la ruta hacia el destino.', ok: 'Iniciar traslado', ack: 'Confirmo que la bolsa fue verificada, está sellada y se mantiene entre 2 y 10 °C.' }),
+  saveManual: () => (isNaN(parseFloat(val('manualTemp'))) ? null : { title: '¿Guardar la lectura manual?', text: `Se registrará <b>${esc(val('manualTemp'))} °C</b> como temperatura del traslado.`, ok: 'Guardar lectura', ack: 'Confirmo que la temperatura fue medida con un termómetro físico.' }),
+  deliver: () => ({ title: '¿Finalizar la entrega?', text: 'Se cerrará el viaje y se generará la bitácora auditada.', ok: 'Finalizar entrega', ack: 'Estoy consciente de que no podré modificar el viaje después de finalizarlo.' }),
+};
+
+const runClick = (t, e) => {
+  if (t.dataset.act) actions[t.dataset.act]?.(t, e);
+  if (t.dataset.go && t.dataset.act !== 'cancelReq') go(t.dataset.go);
+};
+
 document.addEventListener('click', (e) => {
   const t = e.target.closest('[data-act],[data-go]'); if (!t || t.disabled) return;
   const modal = e.target.closest('.modal');
   if (modal && t.dataset.act && t.dataset.act.startsWith('sim')) {
     modal.remove();
   }
-  if (t.dataset.act) actions[t.dataset.act]?.(t, e);
-  if (t.dataset.go && t.dataset.act !== 'cancelReq') go(t.dataset.go);
+  const c = CONFIRMS[t.dataset.act]?.(t);
+  if (c) return confirmModal(c.title, c.text, () => runClick(t, e), c.ok, { ack: c.ack, cancel: c.cancel });
+  runClick(t, e);
 });
 
 document.addEventListener('change', (e) => {
