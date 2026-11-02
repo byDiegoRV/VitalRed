@@ -8,14 +8,14 @@ import { get } from './store.js';
 export const BANK = { name: 'Banco de Sangre Central', ll: [18.8453, -97.1021] };
 export const HOSPITALS = {
   'Hospital General': [18.8601, -97.0897],
-  'Hospital San Rafael': [18.8665, -97.1102],
-  'Clínica Santa María': [18.8372, -97.0942],
-  'Hospital del Valle': [18.8309, -97.118],
-  'Hospital Ángeles': [18.869, -97.095],
-  'Hospital Regional': [18.825, -97.087],
+  'Hospital San Rafael': [18.892, -97.135],
+  'Clínica Santa María': [18.81, -97.06],
+  'Hospital del Valle': [18.82, -97.145],
+  'Hospital Ángeles': [18.875, -97.04],
+  'Hospital Regional': [18.79, -97.1],
 };
 export const hospitalLL = (name) => HOSPITALS[name] || HOSPITALS['Hospital General'];
-const placeLL = (name) => (name === BANK.name ? BANK.ll : hospitalLL(name));
+export const placeLL = (name) => (name === BANK.name ? BANK.ll : hospitalLL(name));
 
 const FLEET_BASE = [
   { id: 'AMB-017', driver: 'Pedro Páramo', state: 'Disponible', ll: [18.8418, -97.0932] },

@@ -1,5 +1,5 @@
 import { get, set, reset, currentUser, HOME, ROLES, normEmail, lockedByOther, holdLock, releaseLock } from './store.js';
-import { nextCase, nextReqId, nextApptId, activeReq, compatible, compatibleDonors, completeDonation, dispatchUnit, releaseDonor, historyOf } from './domain.js';
+import { nextCase, nextReqId, nextApptId, activeReq, compatible, eligibleDonors, completeDonation, dispatchUnit, releaseDonor, historyOf, patchReq, addReview, CHECKS, deferralDate, deferred, demoTrip, fmtDateTime } from './domain.js';
 import { screens } from './screens.js';
 import { DEFAULT_TRIP, getTrip, getHistory } from './screens-transport.js';
 import { passwordIssues, go, toast, confirmModal, icon, esc, download } from './ui.js';
@@ -10,13 +10,13 @@ const NAV = {
   donor: [['d/home', 'Inicio', 'home'], ['d/alert', 'Donar', 'drop'], ['d/qr', 'Citas', 'calendar'], ['d/profile', 'Perfil', 'user']],
   medical: [['m/dashboard', 'Guardia', 'clipboard'], ['m/new', 'Nueva solicitud', 'plus'], ['m/radar', 'Seguimiento', 'radar'], ['m/profile', 'Perfil', 'user']],
   transport: [['t/home', 'Inicio', 'home'], ['t/history', 'Últimos recorridos', 'route'], ['t/profile', 'Perfil', 'user']],
-  bank: [['b/dash', 'Dashboard', 'chart'], ['b/appts', 'Donantes (Citas)', 'users'], ['b/fleet', 'Radar Ambulancias', 'truck'], ['b/reports', 'Reportes', 'file'], ['b/profile', 'Perfil', 'user']]
+  bank: [['b/dash', 'Dashboard', 'chart'], ['b/appts', 'Donantes (Citas)', 'users'], ['b/records', 'Autorizaciones', 'shield'], ['b/fleet', 'Radar Ambulancias', 'truck'], ['b/reports', 'Reportes', 'file'], ['b/profile', 'Perfil', 'user']]
 };
 
 const NAV_PARENT = {
   't/check': 't/home', 't/manual': 't/home', 't/transit': 't/home', 't/delivery': 't/home', 't/logbook': 't/home',
   'd/triage': 'd/alert', 'd/review': 'd/alert', 'd/schedule': 'd/alert', 'd/rejected': 'd/alert', 'd/done': 'd/profile', 'd/pdf': 'd/profile',
-  'm/reception': 'm/radar', 'm/none': 'm/radar', 'd/history': 'd/home', 'd/medical': 'd/home'
+  'm/reception': 'm/radar', 'm/none': 'm/radar', 'd/history': 'd/home', 'd/medical': 'd/home', 'm/detail': 'm/dashboard', 'b/evaluate': 'b/appts', 'b/deny': 'b/appts', 'b/record': 'b/records'
 };
 
 const app = document.getElementById('app');
@@ -63,6 +63,14 @@ const clearErrs = () => {
   document.querySelectorAll('input.bad').forEach((i) => i.classList.remove('bad'));
   document.querySelectorAll('.err').forEach((e) => (e.textContent = ''));
 };
+// Datos obligatorios del paciente en la solicitud
+const reqErrors = () => {
+  const e = {}, name = val('patient'), hc = val('hc'), bed = val('bed');
+  if (name.length < 3) e.patient = 'Escribe el nombre completo del paciente';
+  if (hc.length < 3) e.hc = 'Escribe el número de expediente (HC)';
+  if (!bed) e.bed = 'Indica la cama o ubicación';
+  return e;
+};
 const busyMsg = (l) => `Ya hay una sesión activa (${l.name} · ${ROLES[l.role]}) en otra pestaña. Ciérrala para iniciar con otro perfil.`;
 const enter = (user) => {
   const other = lockedByOther();
@@ -72,8 +80,7 @@ const enter = (user) => {
   go(HOME[user.role]);
   return true;
 };
-const setTrip = (status) => set({ trip: { ...getTrip(), status } });
-const patchReq = (p) => set({ req: { ...get().req, ...p } });
+const setTrip = (status) => { const t = getTrip(); set({ trip: { ...t, status, ...(status === 'transito' && !t.startedAt ? { startedAt: Date.now() } : {}) } }); };
 const selAppt = () => { const A = get().appts; return A.find((a) => a.id === get().selAppt) || A[0]; };
 // Cambia el estado de una cita; al completarse se registra la donación en el historial del donante y avanza su solicitud
 const stepAppt = (a, state) => {
@@ -263,8 +270,8 @@ const actions = {
   resetDemo() { confirmModal('Reiniciar demo', 'Se borrarán usuarios y datos creados.', () => { releaseLock(); reset(); go('login'); route(); }); },
   demoAlert() {
     if (activeReq()) return toast('Ya hay una solicitud en curso', 'err');
-    const u = currentUser(), c = nextCase(u?.blood || 'O+');
-    set({ req: { id: nextReqId(), ...c, status: 'buscando', notified: compatibleDonors(c.blood).length, demo: true, createdAt: new Date().toISOString() } });
+    const u = currentUser(), c = nextCase(u?.blood || 'O+'), now = Date.now();
+    set({ req: { id: nextReqId(), ...c, status: 'buscando', notified: eligibleDonors(c.blood).length, demo: true, createdAt: new Date(now).toISOString(), requester: 'Servicio de ' + c.area, log: [{ k: 'creada', at: now }, { k: 'buscando', at: now }] } });
     go('d/alert');
   },
   snooze() { set({ inFlow: false }); toast('Alerta pospuesta por 15 min', 'ok', { label: 'DESHACER (5s)', run: () => toast('Alerta reactivada') }); },
@@ -273,9 +280,30 @@ const actions = {
   pick(el) { set({ selAppt: el.dataset.id }); route(); },
   tab(el) { set({ apptTab: el.dataset.v }); route(); },
   authorize() { const a = selAppt(); if (!a) return; if (!['Programada', 'Pre-Triaje'].includes(a.state)) return toast('Esta cita ya fue procesada', 'err'); stepAppt(a, 'Extracción'); toast(`Ingreso autorizado: ${a.name}`); route(); },
-  completeAppt() { const a = selAppt(); if (!a || a.state !== 'Extracción') return toast('Primero autoriza el ingreso', 'err'); stepAppt(a, 'Completada'); toast(`Donación registrada: ${a.name}`); route(); },
+  approveDonation() {
+    const a = selAppt(); if (!a || a.state !== 'Extracción') return toast('Primero autoriza el ingreso de la donación', 'err');
+    if (![...document.querySelectorAll('.chkq')].every((c) => c.checked)) return toast('Marca los 4 controles para aprobar la donación', 'err');
+    const r = get().req, linked = r && a.email && r.donor?.email === a.email;
+    const rec = addReview({ apptId: a.id, email: a.email || null, name: a.name, blood: a.blood, decision: 'apta', checks: CHECKS, notes: val('evalNotes'), reqId: linked ? r.id : null, hospital: linked ? r.hospital : null, component: linked ? r.component : 'Sangre total' });
+    stepAppt(a, 'Completada'); toast(`Donación aprobada: ${a.name}`); go(`b/record?id=${rec.id}`);
+  },
+  denyDonation() {
+    const a = selAppt(), ids = [...document.querySelectorAll('.rsn:checked')].map((c) => c.value), notes = val('denyNotes');
+    if (!a || ['Completada', 'Rechazada', 'No asistió'].includes(a.state)) return toast('Esta cita ya no se puede evaluar', 'err');
+    if (!ids.length) return toast('Selecciona al menos un motivo', 'err');
+    if (ids.includes('other') && notes.length < 5) return toast('Describe el motivo en las notas', 'err');
+    const r = get().req, linked = r && a.email && r.donor?.email === a.email, until = deferralDate(ids);
+    const rec = addReview({ apptId: a.id, email: a.email || null, name: a.name, blood: a.blood, decision: 'no_apta', reasons: ids, notes, deferUntil: until, reqId: linked ? r.id : null, hospital: linked ? r.hospital : null, component: linked ? r.component : 'Sangre total' });
+    stepAppt(a, 'Rechazada');
+    if (a.email) {
+      set({ users: get().users.map((u) => (u.email === a.email ? { ...u, ...(until ? { status: 'Diferido temporalmente', deferUntil: until, deferBy: 'review' } : {}) } : u)) });
+      releaseDonor(a.email, { name: a.name, reasons: ids, notes, at: new Date().toISOString(), reviewId: rec.id });
+    }
+    toast('Donación denegada y registrada', 'err'); go(`b/record?id=${rec.id}`);
+  },
+  filterRec(el) { set({ recFilter: el.dataset.v }); route(); },
+  ackNotice(el) { const id = el.id || el.dataset?.id; set({ reviews: (get().reviews || []).map((r) => (r.id === id ? { ...r, seen: true } : r)) }); route(); },
   dispatch() { const t = dispatchUnit(DEFAULT_TRIP); if (!t) return toast('La unidad aún no está lista para despacho', 'err'); toast(`Unidad despachada · viaje ${t.id}`); route(); },
-  reject() { const a = selAppt(); if (!a || ['Completada', 'No asistió'].includes(a.state)) return toast('Esta cita ya no se puede rechazar', 'err'); stepAppt(a, 'No asistió'); if (a.email) releaseDonor(a.email); toast('Acceso rechazado', 'err'); route(); },
   say(el) { toast(el.dataset.msg); },
   submitTriage() { set({ triageAns: [0, 1, 2, 3, 4].map((i) => sel('t' + i)) }); go('d/review'); },
   confirmTriage() { const pass = get().triageAns.every((v, i) => v === ['no', 'no', 'no', 'yes', 'yes'][i]); set({ triage: pass, inFlow: pass ? get().inFlow : false }); go(pass ? 'd/schedule' : 'd/rejected'); },
@@ -303,8 +331,11 @@ const actions = {
   pdf() { go('d/pdf'); },
   print() { window.print(); },
   launch() {
-    const blood = sel('blood'), u = currentUser();
-    set({ req: { id: nextReqId(), blood, units: +document.getElementById('units').textContent, priority: sel('priority'), component: val('component'), area: val('area'), hospital: val('hospital') || u.hospital || 'Hospital General', status: 'buscando', notified: compatibleDonors(blood).length, createdAt: new Date().toISOString(), by: u.email }, inFlow: false, triage: null, triageAns: null });
+    clearErrs();
+    const errs = reqErrors(), ids = Object.keys(errs);
+    if (ids.length) { ids.forEach((i) => fail(i, errs[i])); document.getElementById(ids[0])?.focus(); return toast('Completa los datos del paciente', 'err'); }
+    const blood = sel('blood'), u = currentUser(), now = Date.now();
+    set({ req: { id: nextReqId(), blood, units: +document.getElementById('units').textContent, priority: sel('priority'), component: val('component'), area: val('area'), hospital: val('hospital') || u.hospital || 'Hospital General', patient: val('patient'), hc: val('hc'), bed: val('bed'), diagnosis: val('diagnosis'), requester: u.name, status: 'buscando', notified: eligibleDonors(blood).length, createdAt: new Date(now).toISOString(), by: u.email, log: [{ k: 'creada', at: now }, { k: 'buscando', at: now }] }, inFlow: false, triage: null, triageAns: null });
     toast('Código Rojo lanzado'); go('m/radar');
   },
   cancelReq() {
@@ -316,7 +347,7 @@ const actions = {
     }, 'Sí, cancelar');
   },
   noResp() { patchReq({ status: 'sinrespuesta' }); },
-  retry() { const { donor, appt, ...rest } = get().req; set({ req: { ...rest, status: 'buscando', notified: compatibleDonors(rest.blood).length } }); toast('Ampliando radio a 15 km'); go('m/radar'); },
+  retry() { const { donor, appt, ...rest } = get().req; set({ req: { ...rest } }); patchReq({ status: 'buscando', notified: eligibleDonors(rest.blood, rest.excluded || []).length }); toast('Ampliando radio a 15 km'); go('m/radar'); },
   external() { toast('Solicitud enviada a banco externo'); go('m/dashboard'); },
   saveManual() { const t = parseFloat(val('manualTemp')); if (isNaN(t)) return fail('manualTemp', 'Ingresa una temperatura válida'); set({ temp: t }); setTrip('transito'); toast('Registro manual guardado'); go('t/transit'); },
   heat() { set({ temp: 7.1, simMode: 'heat' }); route(); },
@@ -364,10 +395,10 @@ const actions = {
     reader.readAsDataURL(file);
   },
   deliver() {
-    const t = getTrip(), temp = get().temp;
-    const finalTrip = { ...t, status: 'entregada', temp: temp.toFixed(1) + ' °C', ok: temp <= 6 };
-    set({ activeLogbook: finalTrip, tripHistory: [{ id: t.id, date: 'Hoy', origin: t.origin, dest: t.dest, dur: '22 min', temp: temp.toFixed(1) + ' °C', ok: temp <= 6, photoOrigin: t.photoOrigin, photoDelivery: t.photoDelivery, thermalLogs: t.thermalLogs }, ...getHistory()], trip: null, temp: 4.2 });
-    if (t.reqId && get().req?.id === t.reqId) patchReq({ delivery: 'entregada', deliveredAt: new Date().toISOString() });
+    const t = getTrip(), temp = get().temp, now = Date.now();
+    const finalTrip = { ...t, status: 'entregada', temp: temp.toFixed(1) + ' °C', ok: temp <= 6, deliveredAt: now };
+    set({ activeLogbook: finalTrip, tripHistory: [{ id: t.id, date: fmtDateTime(now), at: now, origin: t.origin, dest: t.dest, dur: t.eta || '—', temp: temp.toFixed(1) + ' °C', ok: temp <= 6, photoOrigin: t.photoOrigin, photoDelivery: t.photoDelivery, thermalLogs: t.thermalLogs, startedAt: t.startedAt, deliveredAt: now, content: t.content }, ...getHistory()], trip: null, temp: 4.2 });
+    if (t.reqId && get().req?.id === t.reqId) patchReq({ delivery: 'entregada', deliveredAt: new Date(now).toISOString() });
     toast('Entrega finalizada y bitácora auditada generada');
     go('t/logbook');
   },
@@ -380,12 +411,12 @@ const actions = {
   printLogbook() { window.print(); },
   tripCustody() { setTrip('custodia'); },
   tripRoute() { setTrip('transito'); },
-  newTrip() { set({ trip: { ...DEFAULT_TRIP } }); route(); },
+  newTrip() { set({ trip: demoTrip(DEFAULT_TRIP) }); toast('Viaje de demostración asignado'); route(); },
   simStage() {
     const r = activeReq(); if (!r) return;
     if (r.status === 'buscando') patchReq({ status: 'esperando', donor: { name: 'Donante de prueba', email: null, blood: r.blood } });
     else if (r.status === 'esperando') { const a = { id: nextApptId(), name: 'Donante de prueba', blood: r.blood, time: '09:00', state: 'Programada' }; set({ appts: [a, ...get().appts] }); patchReq({ status: 'programada', appt: { id: a.id, time: a.time } }); }
-    else if (r.status === 'programada') { set({ appts: get().appts.map((a) => (a.id === r.appt?.id ? { ...a, state: 'Completada' } : a)) }); patchReq({ status: 'completada', completedAt: new Date().toISOString(), delivery: 'preparando' }); }
+    else if (r.status === 'programada') { set({ appts: get().appts.map((a) => (a.id === r.appt?.id ? { ...a, state: 'Completada' } : a)) }); addReview({ apptId: r.appt?.id, email: null, name: r.donor?.name || 'Donante de prueba', blood: r.donor?.blood || r.blood, decision: 'apta', checks: CHECKS, notes: 'Simulación de la etapa.', reqId: r.id, hospital: r.hospital, component: r.component }); patchReq({ status: 'completada', completedAt: new Date().toISOString(), delivery: 'preparando' }); }
     else if (r.delivery === 'preparando') dispatchUnit(DEFAULT_TRIP);
     else if (r.delivery === 'en_ruta') { set({ trip: null }); patchReq({ delivery: 'entregada', deliveredAt: new Date().toISOString() }); }
     route();
@@ -403,10 +434,10 @@ const actions = {
     toast(eligible ? 'Datos médicos actualizados · Apto para donar' : 'Datos actualizados · Donación diferida temporalmente'); go('d/home');
   },
   scanAppt() {
-    const done = ['Completada', 'No asistió'], cur = selAppt(), next = cur && !done.includes(cur.state) ? cur : get().appts.find((a) => !done.includes(a.state));
+    const done = ['Completada', 'No asistió', 'Rechazada'], cur = selAppt(), next = cur && !done.includes(cur.state) ? cur : get().appts.find((a) => !done.includes(a.state));
     if (!next) return toast('No hay citas pendientes');
-    const state = next.state !== 'Extracción' ? 'Extracción' : 'Completada';
-    stepAppt(next, state); toast(`${next.name}: ${state}`); route();
+    if (next.state === 'Extracción') { set({ selAppt: next.id }); toast('Evalúa la donación para aprobarla o denegarla'); return go('b/evaluate'); }
+    stepAppt(next, 'Extracción'); toast(`${next.name}: Extracción`); route();
   },
   export() { toast('Reporte NOM-253 exportado (simulado)'); }
 };
@@ -419,7 +450,8 @@ const CONFIRMS = {
   confirmSlot: () => (sel('slot') ? { title: '¿Confirmar tu cita?', text: `Se agendará tu donación a las <b>${esc(sel('slot'))}</b>.`, ok: 'Confirmar cita' } : null),
   endFlow: () => ({ title: '¿Cancelar tu cita?', text: 'Se liberará tu horario y tendrás que agendar de nuevo.', ok: 'Cancelar cita', cancel: 'Conservar cita' }),
   declineFlow: () => ({ title: '¿Ya no puedes donar?', text: 'Liberaremos tu lugar y avisaremos al hospital para seguir buscando otro donante.', ok: 'Sí, ya no puedo', cancel: 'Seguir con mi cita' }),
-  completeAppt: () => { const a = selAppt(); return { title: '¿Registrar la donación?', text: `Se marcará como completada la extracción de <b>${esc(a?.name)}</b> y se agregará a su historial.`, ok: 'Registrar donación', ack: 'Confirmo que la extracción se realizó y que la bolsa quedó etiquetada.' }; },
+  approveDonation: () => { const a = selAppt(); return [...document.querySelectorAll('.chkq')].every((c) => c.checked) ? { title: '¿Aprobar la donación?', text: `La sangre de <b>${esc(a?.name)}</b> quedará aprobada y se registrará en su historial.`, ok: 'Aprobar donación', ack: 'Confirmo que se verificaron los 4 controles y que la sangre no presenta problemas.' } : null; },
+  denyDonation: () => { const a = selAppt(); return document.querySelector('.rsn:checked') ? { title: '¿Denegar la donación?', text: `Se notificará a <b>${esc(a?.name)}</b>, quedará registrado el motivo y la solicitud buscará a otro donante.`, ok: 'Denegar donación', ack: 'Estoy consciente de que esta decisión queda registrada en el historial del donante y en la bitácora.' } : null; },
   dispatch: () => ({ title: '¿Despachar la unidad?', text: `Se asignará un viaje al transportista con destino <b>${esc(get().req?.hospital)}</b>.`, ok: 'Despachar unidad', ack: 'Estoy consciente de que la unidad debe viajar entre 2 y 10 °C.' }),
   receive: () => ({ title: '¿Confirmar la recepción?', text: 'Se cerrará el caso y podrás iniciar la transfusión.', ok: 'Confirmar recepción', ack: 'Confirmo que verifiqué el sello, la integridad de la bolsa y la compatibilidad del paciente.' }),
   saveMedical: () => {
@@ -429,13 +461,13 @@ const CONFIRMS = {
   },
   back: () => (['d/triage', 'd/review', 'd/schedule'].includes(parseHash().path) ? { title: '¿Salir de este proceso?', text: 'Tu avance en este paso se perderá.', ok: 'Salir', cancel: 'Seguir aquí' } : null),
   launch: () => {
+    if (Object.keys(reqErrors()).length) return null;
     const crit = sel('priority') === 'CRÍTICA', cur = get().req, replacing = cur && !['cancelada', 'programada'].includes(cur.status);
     return { title: crit ? '¿Lanzar CÓDIGO ROJO?' : '¿Lanzar la solicitud?', text: `Se alertará a donantes compatibles (${esc(sel('blood'))}) y al banco de sangre.${replacing ? ` <b>La solicitud ${esc(cur.id)} activa será reemplazada.</b>` : ''}`, ok: crit ? 'Lanzar alerta' : 'Lanzar solicitud', ack: crit ? 'Estoy consciente de que es una alerta de emergencia y de que los datos del paciente son correctos.' : undefined };
   },
   retry: () => ({ title: '¿Ampliar el radio a 15 km?', text: 'Se notificará a más donantes, incluso fuera de la zona inicial.', ok: 'Ampliar radio' }),
   external: () => ({ title: '¿Enviar a un banco externo?', text: 'La solicitud saldrá de la red local de VitalRed.', ok: 'Enviar solicitud' }),
   authorize: () => { const a = get().appts.find((x) => x.id === (get().selAppt || get().appts[0].id)); return { title: '¿Autorizar el ingreso?', text: `Se registrará el ingreso de <b>${esc(a?.name)}</b> a extracción.`, ok: 'Autorizar ingreso' }; },
-  reject: () => ({ title: '¿Rechazar el acceso?', text: 'El donante no podrá continuar con su donación.', ok: 'Rechazar acceso', ack: 'Estoy consciente de que esta decisión queda registrada en la bitácora.' }),
   forceAssign: (el) => ({ title: `¿Forzar la asignación de ${esc(el.dataset.id)}?`, text: 'Se omitirá la asignación automática por cercanía y la unidad quedará asignada a la solicitud activa.', ok: 'Forzar asignación', ack: 'Estoy consciente de que esta acción interrumpe la asignación automática del sistema.' }),
   releaseUnit: (el) => ({ title: `¿Liberar ${esc(el.dataset.id)}?`, text: 'La unidad volverá a estar disponible para nuevas solicitudes.', ok: 'Liberar unidad' }),
   startCampaign: () => { const g = stockNow().filter(([, , st]) => st === 'CRÍTICO').map(([x]) => x); return { title: '¿Iniciar campaña de alerta?', text: `Se notificará a los donantes de los grupos en escasez: <b>${esc(g.join(', ') || 'O-')}</b>.`, ok: 'Iniciar campaña', ack: 'Estoy consciente de que se enviará una notificación a todos los donantes compatibles.' }; },

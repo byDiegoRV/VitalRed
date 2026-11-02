@@ -71,6 +71,12 @@ Todos los perfiles comparten los datos en el navegador (`localStorage`), así qu
 
 Para demostraciones con un solo perfil, el médico puede usar los botones *Simular* del radar. *Recibir alerta de demostración* (donante) rota entre casos con distintos hospitales, grupos y hemocomponentes.
 
+### Datos reales de cada caso
+- La solicitud incluye **paciente, expediente (HC), cama o ubicación, diagnóstico, servicio, hospital destino y hemocomponente**. El médico ve cada caso con **Ver más detalles** (paciente, donante, proceso con hora de cada etapa, evaluación y traslado).
+- **El banco decide si la sangre es apta**: en *Evaluar donación* marca 4 controles y aprueba (*Todo salió bien*), o *Denegar donación* eligiendo uno o más motivos (muelas picadas, tatuajes, medicamentos, etc.). Todo queda en **Autorizaciones** con *Ver con detalle*. Si se deniega, el donante ve el motivo y su diferimiento, y la solicitud busca a otro donante. La constancia de donación solo existe si fue aprobada.
+- Al despachar, el transportista recibe **ese** viaje (origen, destino, contenido, servicio, solicitante y hora de asignación) con la ruta y el tiempo calculados; ya no hay un viaje de ejemplo fijo. Sin viaje asignado puede pedir uno de demostración con destino distinto cada vez.
+- Fechas y horas son las **reales** del equipo (horarios de cita a partir de la hora actual, bitácora con salida y entrega, historial del transportista y del donante). Los datos de ejemplo conservan sus fechas.
+
 ## Sesión y registro
 - La sesión es **por pestaña** y la app **siempre abre en el login** (cada `npm start` y cada apertura nueva); recargar con F5 conserva la sesión.
 - Solo puede haber **un perfil activo por navegador**: otra pestaña no puede iniciar sesión mientras exista una sesión viva.

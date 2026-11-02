@@ -1,6 +1,7 @@
 import { get, set, currentUser, ROLES } from './store.js';
-import { btn, card, badge, stepper, statusScreen, icon, qrPattern } from './ui.js';
-import { mountTripMap, fmtKm, fmtMin } from './maps.js';
+import { btn, card, badge, stepper, statusScreen, icon, qrPattern, esc } from './ui.js';
+import { mountTripMap, fmtKm, fmtMin, calcRoute, placeLL } from './maps.js';
+import { fmtDateTime, hhmm } from './domain.js';
 
 export const DEFAULT_TRIP = {
   id: 'TR-9902',
@@ -33,10 +34,8 @@ const SEED_HISTORY = [
   { id: 'TR-9870', date: '18 sep 2026', origin: 'Banco de Sangre Central', dest: 'Hospital Regional', dur: '27 min', temp: '4.3 °C', ok: true, photoOrigin: null, photoDelivery: null, thermalLogs: [{ time: '08:30', temp: 4.3, status: 'NORMAL' }] }
 ];
 
-export const getTrip = () => {
-  if (get().trip === undefined) return DEFAULT_TRIP;
-  return get().trip;
-};
+// Viaje activo del transportista: solo existe cuando el banco despacha una unidad (o se pide uno de demostración)
+export const getTrip = () => get().trip ?? null;
 
 export const getHistory = () => get().tripHistory || SEED_HISTORY;
 
@@ -52,7 +51,7 @@ const kv = (rows) => `<div class="kv">${rows.map(([k, v]) => `<div><small class=
 
 const routeViz = (t) => `<div class="route"><div class="rp"><span class="dot"></span><div><small class="lbl">ORIGEN</small><b>${t.origin}</b></div></div><div class="rline"></div><div class="rp"><span class="dot end"></span><div><small class="lbl">DESTINO</small><b>${t.dest}</b></div></div></div>`;
 
-const noTrip = () => statusScreen(icon('truck', 44), 'Sin viaje a cargo', 'No tienes requisiciones asignadas por ahora.', btn('Simular nueva requisición', { act: 'newTrip' }));
+const noTrip = () => statusScreen(icon('truck', 44), 'Sin viaje a cargo', 'Cuando el banco de sangre despache una unidad, tu viaje aparecerá aquí con su destino y su ruta.', btn('Solicitar viaje de demostración', { act: 'newTrip' }));
 
 const historyItem = (h) => `<div class="item"><div><b>${h.origin} → ${h.dest}</b><br><small class="mut">${h.id} • ${h.date} • ${h.dur}</small></div><div class="row" style="flex:none">${badge(h.temp, h.ok ? 'ok' : 'red')}${btn('Bitácora', { act: 'viewLogbook', id: h.id, v: 'ghost', cls: 'sm' })}</div></div>`;
 
@@ -62,9 +61,22 @@ export const transportScreens = {
     render: () => {
       const u = currentUser(), t = getTrip();
       const head = `<div class="hello full"><div><h1>Hola, ${u.name.split(' ')[0]}</h1><p class="mut">Unidad ${u.unit || 'AMB-014'} • Turno activo</p></div>${badge('En servicio', 'ok')}</div>`;
-      if (!t) return head + noTrip();
+      const hist = card(`<div class="between"><h3>Últimos recorridos</h3>${btn('Ver todos', { go: 't/history', v: 'ghost', cls: 'sm' })}</div>${getHistory().slice(0, 3).map(historyItem).join('')}`);
+      if (!t) return head + noTrip() + hist;
       const [label, to, act] = NEXT[t.status] || NEXT.asignada;
-      return `${head}${card(`<div class="between"><small class="lbl">VIAJE A CARGO</small>${badge(STEPS[IDX[t.status]], 'warn')}</div><h2 style="margin:4px 0 14px">Requisición #${t.id}</h2>${routeViz(t)}${kv([['Contenido', t.content], ['Distancia', t.distance], ['Tiempo estimado', t.eta], ['Rango térmico', '2 - 10 °C']])}${stepper(STEPS, IDX[t.status])}${btn(label, { go: to, act })}`, 'trip')}${card(`<div class="between"><h3>Últimos recorridos</h3>${btn('Ver todos', { go: 't/history', v: 'ghost', cls: 'sm' })}</div>${getHistory().slice(0, 3).map(historyItem).join('')}`)}${card(`<h3>Recordatorios de custodia</h3>${['Verifica el sello y la integridad de la bolsa', 'Toma fotografía obligatoria pre-despacho y entrega', 'Mantén el contenedor entre 2 y 10 °C', 'Registra la temperatura manual si el sensor pierde señal'].map((r) => `<div class="item"><span>${icon('check', 16)} ${r}</span></div>`).join('')}`)}`;
+      return `${head}${card(`<div class="between"><small class="lbl">VIAJE A CARGO</small>${badge(STEPS[IDX[t.status]], 'warn')}</div><h2 style="margin:4px 0 14px">Requisición #${t.id}</h2>${routeViz(t)}${kv([['Contenido', esc(t.content)], ['Distancia', `<span id="tDist">${esc(t.distance)}</span>`], ['Tiempo estimado', `<span id="tEta">${esc(t.eta)}</span>`], ['Rango térmico', '2 - 10 °C'], ['Prioridad', esc(t.priority || 'ALTA')], ['Entregar en', esc([t.area, t.bed].filter(Boolean).join(' · ') || t.dest)], ['Solicitante', esc(t.requester || 'Hospital destino')], ['Asignado', t.assignedAt ? `${hhmm(t.assignedAt)} · ${esc(t.assignedTo || 'Banco de sangre')}` : 'Demostración']])}${stepper(STEPS, IDX[t.status])}${btn(label, { go: to, act })}`, 'trip')}${card(`<div class="between"><h3>Últimos recorridos</h3>${btn('Ver todos', { go: 't/history', v: 'ghost', cls: 'sm' })}</div>${getHistory().slice(0, 3).map(historyItem).join('')}`)}${card(`<h3>Recordatorios de custodia</h3>${['Verifica el sello y la integridad de la bolsa', 'Toma fotografía obligatoria pre-despacho y entrega', 'Mantén el contenedor entre 2 y 10 °C', 'Registra la temperatura manual si el sensor pierde señal'].map((r) => `<div class="item"><span>${icon('check', 16)} ${r}</span></div>`).join('')}`)}`;
+    },
+    mount: (root) => {
+      const t = getTrip(); if (!t) return null;
+      let dead = false;
+      calcRoute(placeLL(t.origin), placeLL(t.dest)).then((r) => {
+        const cur = getTrip(); if (dead || !cur || cur.id !== t.id) return;
+        const d = root.querySelector('#tDist'), e = root.querySelector('#tEta');
+        if (d) d.textContent = fmtKm(r.km) + (r.real ? '' : ' (aprox.)');
+        if (e) e.textContent = fmtMin(r.min);
+        set({ trip: { ...cur, distance: fmtKm(r.km), eta: fmtMin(r.min) } });
+      });
+      return () => { dead = true; };
     }
   },
   't/check': {
@@ -148,7 +160,7 @@ export const transportScreens = {
     role: 'transport', wide: true,
     render: () => {
       const logData = get().activeLogbook || getTrip() || DEFAULT_TRIP;
-      const logs = logData.thermalLogs && logData.thermalLogs.length ? logData.thermalLogs : [{ time: '10:00', temp: 4.2, status: 'NORMAL' }];
+      const logs = logData.thermalLogs && logData.thermalLogs.length ? logData.thermalLogs : [{ time: hhmm(logData.deliveredAt || Date.now()), temp: parseFloat(logData.temp) || 4.2, status: 'NORMAL' }];
       const temps = logs.map((l) => l.temp);
       const minTemp = Math.min(...temps).toFixed(1), maxTemp = Math.max(...temps).toFixed(1);
       const avgTemp = (temps.reduce((a, b) => a + b, 0) / temps.length).toFixed(1);
@@ -158,7 +170,7 @@ export const transportScreens = {
       const fmt = (m) => (m && m.timestamp ? new Date(m.timestamp).toLocaleString('es-MX', { dateStyle: 'short', timeStyle: 'short' }) : '');
       const photo = (src, label, alt, meta) => `<figure class="evid"><figcaption class="lbl">${label}</figcaption>${src ? `<div class="photo-preview"><img src="${src}" alt="${alt}"></div><small class="mut">${meta?.location ? meta.location + ' · ' : ''}${fmt(meta)}</small>` : '<div class="photo-empty">Sin foto registrada</div>'}</figure>`;
       const tile = ([k, v]) => `<div><small class="lbl">${k.toUpperCase()}</small><b>${v}</b></div>`;
-      return `<article class="doc logbook"><header class="doc-head"><div class="logo"><i>${icon('drop', 18)}</i>VitalRed</div><div class="right"><small class="lbl">BITÁCORA DE RUTA</small><br><b>${logData.id || 'TR-9902'}</b></div></header><div class="doc-title"><div><h1>Bitácora de Trazabilidad Transfusional</h1><p class="mut">Documento oficial de custodia y cadena de frío según NOM-253-SSA1-2012.</p></div><div class="qr sm" role="img" aria-label="Código de verificación del documento">${qrPattern(String(logData.id || 'TR-9902'))}</div></div><div class="doc-grid">${[['Operador', u?.name || 'Luis Pérez'], ['Unidad', u?.unit || 'AMB-014'], ['Origen', logData.origin], ['Destino', logData.dest], ['Contenido', logData.content], ['Estado', 'ENTREGADO']].map(tile).join('')}</div><h3>Resumen de Telemetría Térmica ${inRange ? '<span class="badge ok">CUMPLE NORMA</span>' : '<span class="badge red">FUERA DE RANGO</span>'}</h3><div class="doc-grid cols4">${[['Temp. mínima', minTemp + ' °C'], ['Temp. máxima', maxTemp + ' °C'], ['Temp. promedio', avgTemp + ' °C'], ['Rango norma', '2.0 – 10.0 °C']].map(tile).join('')}</div><h3>Historial de Lecturas de Temperatura</h3><div class="tbl"><table><thead><tr><th>Hora</th><th>Temperatura</th><th>Estado</th></tr></thead><tbody>${shown.map((l) => `<tr><td>${l.time}</td><td><b>${l.temp} °C</b></td><td>${l.status === 'NORMAL' ? '<span class="badge ok">NORMAL</span>' : '<span class="badge red">ALERTA</span>'}</td></tr>`).join('')}</tbody></table></div>${logs.length > shown.length ? `<small class="mut">Se muestran las últimas ${shown.length} de ${logs.length} lecturas registradas.</small>` : ''}<h3>Evidencias Fotográficas de Custodia</h3><div class="grid two evid-grid">${photo(logData.photoOrigin, 'FOTO EN ORIGEN (PRE-DESPACHO)', 'Foto de origen', logData.photoOriginMeta)}${photo(logData.photoDelivery, 'FOTO EN DESTINO (RECEPCIÓN)', 'Foto de destino', logData.photoDeliveryMeta)}</div><p class="cert">Certificación de recepción y conformidad en punto de entrega.</p><div class="sigs"><div class="signline">Firma del transportista · ${u?.name || 'Luis Pérez'}</div><div class="signline">Firma Personal Receptor Hospital Destino</div></div><small class="mut">Generado por VitalRed • Módulo de Transporte • Trazabilidad Auditada.</small></article><div class="stack noprint" style="margin-top:16px">${btn('Descargar Bitácora PDF', { act: 'printLogbook', v: 'primary' })}${btn('Volver a Inicio', { go: 't/home', v: 'ghost' })}</div>`;
+      return `<article class="doc logbook"><header class="doc-head"><div class="logo"><i>${icon('drop', 18)}</i>VitalRed</div><div class="right"><small class="lbl">BITÁCORA DE RUTA</small><br><b>${logData.id || 'TR-9902'}</b></div></header><div class="doc-title"><div><h1>Bitácora de Trazabilidad Transfusional</h1><p class="mut">Documento oficial de custodia y cadena de frío según NOM-253-SSA1-2012.</p></div><div class="qr sm" role="img" aria-label="Código de verificación del documento">${qrPattern(String(logData.id || 'TR-9902'))}</div></div><div class="doc-grid">${[['Operador', u?.name || 'Luis Pérez'], ['Unidad', u?.unit || 'AMB-014'], ['Origen', logData.origin], ['Destino', logData.dest], ['Contenido', logData.content], ['Estado', 'ENTREGADO'], ['Salida', logData.startedAt ? fmtDateTime(logData.startedAt) : '—'], ['Entrega', logData.deliveredAt ? fmtDateTime(logData.deliveredAt) : '—']].map(tile).join('')}</div><h3>Resumen de Telemetría Térmica ${inRange ? '<span class="badge ok">CUMPLE NORMA</span>' : '<span class="badge red">FUERA DE RANGO</span>'}</h3><div class="doc-grid cols4">${[['Temp. mínima', minTemp + ' °C'], ['Temp. máxima', maxTemp + ' °C'], ['Temp. promedio', avgTemp + ' °C'], ['Rango norma', '2.0 – 10.0 °C']].map(tile).join('')}</div><h3>Historial de Lecturas de Temperatura</h3><div class="tbl"><table><thead><tr><th>Hora</th><th>Temperatura</th><th>Estado</th></tr></thead><tbody>${shown.map((l) => `<tr><td>${l.time}</td><td><b>${l.temp} °C</b></td><td>${l.status === 'NORMAL' ? '<span class="badge ok">NORMAL</span>' : '<span class="badge red">ALERTA</span>'}</td></tr>`).join('')}</tbody></table></div>${logs.length > shown.length ? `<small class="mut">Se muestran las últimas ${shown.length} de ${logs.length} lecturas registradas.</small>` : ''}<h3>Evidencias Fotográficas de Custodia</h3><div class="grid two evid-grid">${photo(logData.photoOrigin, 'FOTO EN ORIGEN (PRE-DESPACHO)', 'Foto de origen', logData.photoOriginMeta)}${photo(logData.photoDelivery, 'FOTO EN DESTINO (RECEPCIÓN)', 'Foto de destino', logData.photoDeliveryMeta)}</div><p class="cert">Certificación de recepción y conformidad en punto de entrega.</p><div class="sigs"><div class="signline">Firma del transportista · ${u?.name || 'Luis Pérez'}</div><div class="signline">Firma Personal Receptor Hospital Destino</div></div><small class="mut">Generado por VitalRed • Módulo de Transporte • Trazabilidad Auditada.</small></article><div class="stack noprint" style="margin-top:16px">${btn('Descargar Bitácora PDF', { act: 'printLogbook', v: 'primary' })}${btn('Volver a Inicio', { go: 't/home', v: 'ghost' })}</div>`;
     }
   },
   't/history': {

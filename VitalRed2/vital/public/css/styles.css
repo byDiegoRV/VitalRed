@@ -208,3 +208,10 @@ body[data-role]:not([data-role=guest]) :is(.btn,.tabs,.hdr,.badge,.chip,.seg,.st
 .tl li.done{color:var(--ok-text)}.tl li.done i{background:var(--ok-solid);border-color:var(--ok-solid)}
 .tl li.now{color:var(--txt);font-weight:700}.tl li.now i{border-color:var(--red-solid);box-shadow:0 0 0 4px color-mix(in srgb,var(--red) 22%,transparent)}
 .sig[role=button]:focus-visible{outline:3px solid var(--blue-text);outline-offset:2px}
+
+/* ===== v3.7: evaluación del banco, detalle de solicitudes y notas ===== */
+textarea{width:100%;min-height:84px;padding:12px 14px;border-radius:12px;border:1.5px solid var(--line);background:var(--soft);color:var(--txt);font:inherit;resize:vertical;transition:var(--ease)}
+textarea:focus{border-color:var(--blue);background:var(--card)}
+body[data-role]:not([data-role=guest]) textarea{cursor:text}
+.rsngrp{border:0;margin:0 0 12px;padding:0}
+.rsngrp legend{padding:0;margin-bottom:4px;font-size:12px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--mut)}
