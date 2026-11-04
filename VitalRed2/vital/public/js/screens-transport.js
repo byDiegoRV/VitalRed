@@ -1,7 +1,7 @@
 import { get, set, currentUser, ROLES } from './store.js';
 import { btn, card, badge, stepper, statusScreen, icon, qrPattern, esc } from './ui.js';
 import { mountTripMap, fmtKm, fmtMin, calcRoute, placeLL } from './maps.js';
-import { fmtDateTime, hhmm } from './domain.js';
+import { fmtDateTime, hhmm, ago } from './domain.js';
 
 export const DEFAULT_TRIP = {
   id: 'TR-9902',
@@ -51,7 +51,7 @@ const kv = (rows) => `<div class="kv">${rows.map(([k, v]) => `<div><small class=
 
 const routeViz = (t) => `<div class="route"><div class="rp"><span class="dot"></span><div><small class="lbl">ORIGEN</small><b>${t.origin}</b></div></div><div class="rline"></div><div class="rp"><span class="dot end"></span><div><small class="lbl">DESTINO</small><b>${t.dest}</b></div></div></div>`;
 
-const noTrip = () => statusScreen(icon('truck', 44), 'Sin viaje a cargo', 'Cuando el banco de sangre despache una unidad, tu viaje aparecerá aquí con su destino y su ruta.', btn('Solicitar viaje de demostración', { act: 'newTrip' }));
+const noTrip = () => statusScreen(icon('truck', 44), 'Sin viaje a cargo', 'Elige un viaje de la lista de viajes disponibles para comenzar.', '');
 
 const historyItem = (h) => `<div class="item"><div><b>${h.origin} → ${h.dest}</b><br><small class="mut">${h.id} • ${h.date} • ${h.dur}</small></div><div class="row" style="flex:none">${badge(h.temp, h.ok ? 'ok' : 'red')}${btn('Bitácora', { act: 'viewLogbook', id: h.id, v: 'ghost', cls: 'sm' })}</div></div>`;
 
@@ -62,9 +62,11 @@ export const transportScreens = {
       const u = currentUser(), t = getTrip();
       const head = `<div class="hello full"><div><h1>Hola, ${u.name.split(' ')[0]}</h1><p class="mut">Unidad ${u.unit || 'AMB-014'} • Turno activo</p></div>${badge('En servicio', 'ok')}</div>`;
       const hist = card(`<div class="between"><h3>Últimos recorridos</h3>${btn('Ver todos', { go: 't/history', v: 'ghost', cls: 'sm' })}</div>${getHistory().slice(0, 3).map(historyItem).join('')}`);
-      if (!t) return head + noTrip() + hist;
+      const queue = get().tripQueue || [];
+      const avail = card(`<div class="between"><h3>Viajes disponibles</h3>${badge(String(queue.length), queue.length ? 'warn' : '')}</div>${t ? '<div class="banner info">Termina tu viaje actual para tomar otro.</div>' : ''}${queue.length ? queue.map((q) => `<div class="inc"><div class="between"><b>${esc(q.origin)} → ${esc(q.dest)}</b>${badge(q.priority || 'ALTA', q.priority === 'CRÍTICA' ? 'red' : 'warn')}</div><small class="mut">${esc(q.id)} · Publicado ${ago(q.publishedAt)}${q.demo ? ' · Demostración' : ''}</small>${kv([['Contenido', esc(q.content)], ['Distancia · tiempo', `${esc(q.distance)} · ${esc(q.eta)}`], ['Entregar en', esc([q.area, q.bed].filter(Boolean).join(' · ') || q.dest)], ['Solicitante', esc(q.requester || '—')], ['Rango térmico', '2 - 10 °C']])}<button class="btn ${t ? '' : 'primary '}sm" data-act="takeTrip" data-id="${esc(q.id)}"${t ? ' disabled' : ''}>Tomar este viaje</button></div>`).join('') : '<p class="mut" style="margin-top:8px">No hay viajes disponibles por ahora. Cuando el banco de sangre despache una unidad, aparecerá aquí.</p>'}<div style="margin-top:12px">${btn('Solicitar viaje de demostración', { act: 'newTrip', v: 'ghost' })}</div>`, 'full');
+      if (!t) return head + noTrip() + hist + avail;
       const [label, to, act] = NEXT[t.status] || NEXT.asignada;
-      return `${head}${card(`<div class="between"><small class="lbl">VIAJE A CARGO</small>${badge(STEPS[IDX[t.status]], 'warn')}</div><h2 style="margin:4px 0 14px">Requisición #${t.id}</h2>${routeViz(t)}${kv([['Contenido', esc(t.content)], ['Distancia', `<span id="tDist">${esc(t.distance)}</span>`], ['Tiempo estimado', `<span id="tEta">${esc(t.eta)}</span>`], ['Rango térmico', '2 - 10 °C'], ['Prioridad', esc(t.priority || 'ALTA')], ['Entregar en', esc([t.area, t.bed].filter(Boolean).join(' · ') || t.dest)], ['Solicitante', esc(t.requester || 'Hospital destino')], ['Asignado', t.assignedAt ? `${hhmm(t.assignedAt)} · ${esc(t.assignedTo || 'Banco de sangre')}` : 'Demostración']])}${stepper(STEPS, IDX[t.status])}${btn(label, { go: to, act })}`, 'trip')}${card(`<div class="between"><h3>Últimos recorridos</h3>${btn('Ver todos', { go: 't/history', v: 'ghost', cls: 'sm' })}</div>${getHistory().slice(0, 3).map(historyItem).join('')}`)}${card(`<h3>Recordatorios de custodia</h3>${['Verifica el sello y la integridad de la bolsa', 'Toma fotografía obligatoria pre-despacho y entrega', 'Mantén el contenedor entre 2 y 10 °C', 'Registra la temperatura manual si el sensor pierde señal'].map((r) => `<div class="item"><span>${icon('check', 16)} ${r}</span></div>`).join('')}`)}`;
+      return `${head}${card(`<div class="between"><small class="lbl">VIAJE A CARGO</small>${badge(STEPS[IDX[t.status]], 'warn')}</div><h2 style="margin:4px 0 14px">Requisición #${t.id}</h2>${routeViz(t)}${kv([['Contenido', esc(t.content)], ['Distancia', `<span id="tDist">${esc(t.distance)}</span>`], ['Tiempo estimado', `<span id="tEta">${esc(t.eta)}</span>`], ['Rango térmico', '2 - 10 °C'], ['Prioridad', esc(t.priority || 'ALTA')], ['Entregar en', esc([t.area, t.bed].filter(Boolean).join(' · ') || t.dest)], ['Solicitante', esc(t.requester || 'Hospital destino')], ['Asignado', t.assignedAt ? `${hhmm(t.assignedAt)} · ${esc(t.assignedTo || 'Banco de sangre')}` : 'Demostración']])}${stepper(STEPS, IDX[t.status])}${btn(label, { go: to, act })}`, 'trip')}${hist}${avail}${card(`<h3>Recordatorios de custodia</h3>${['Verifica el sello y la integridad de la bolsa', 'Toma fotografía obligatoria pre-despacho y entrega', 'Mantén el contenedor entre 2 y 10 °C', 'Registra la temperatura manual si el sensor pierde señal'].map((r) => `<div class="item"><span>${icon('check', 16)} ${r}</span></div>`).join('')}`)}`;
     },
     mount: (root) => {
       const t = getTrip(); if (!t) return null;

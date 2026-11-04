@@ -18,6 +18,14 @@ const seed = () => ({
 });
 let state = JSON.parse(localStorage.getItem(KEY) || 'null') || seed();
 
+// Limpieza de datos heredados de versiones anteriores: viaje de ejemplo fijo (sin asignación real) e historial con "Hoy"
+{
+  let dirty = false;
+  if (state.trip && !state.trip.assignedAt) { state.trip = null; dirty = true; }
+  if (Array.isArray(state.tripHistory) && state.tripHistory.some((h) => h.date === 'Hoy')) { state.tripHistory = state.tripHistory.filter((h) => h.date !== 'Hoy'); dirty = true; }
+  if (dirty) localStorage.setItem(KEY, JSON.stringify(state));
+}
+
 // La sesión vive en la pestaña (sessionStorage), no en los datos compartidos: cada vez que se arranca el
 // servidor o se abre la app desde cero se empieza en el login. Los datos (solicitudes, citas, usuarios) sí se comparten.
 const nav = performance.getEntriesByType?.('navigation')?.[0]?.type;

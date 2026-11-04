@@ -89,11 +89,21 @@ export const completeDonation = (appt) => {
 };
 
 // El banco despacha la unidad: se crea el viaje del transportista hacia el hospital que la pidió
+// El banco despacha la unidad: se PUBLICA un viaje para que un transportista lo tome (cola de viajes disponibles)
 export const dispatchUnit = (baseTrip) => {
   const r = get().req; if (!r || r.status !== 'completada' || r.delivery !== 'preparando') return null;
-  const dist = routeKm(r.hospital), tr = get().users.find((u) => u.role === 'transport');
-  const trip = { ...baseTrip, id: `TR-${r.id.slice(3)}`, origin: BANK.name, dest: r.hospital, content: `${r.units} u. ${r.component} ${r.blood}`, distance: `${dist.toFixed(1)} km`, eta: `${Math.max(5, Math.round((dist / 30) * 60))} min`, status: 'asignada', check0: false, check1: false, check2: false, scanOk: false, signOk: false, photoOrigin: null, photoDelivery: null, thermalLogs: [], reqId: r.id, priority: r.priority, area: r.area, bed: r.bed, requester: r.requester, assignedAt: Date.now(), assignedTo: tr ? `${tr.name} · ${tr.unit || 'AMB-014'}` : 'Transportista' };
-  set({ trip, temp: 4.2 }); patchReq({ delivery: 'en_ruta', tripId: trip.id, assignedTo: trip.assignedTo });
+  const dist = routeKm(r.hospital);
+  const trip = { ...baseTrip, id: `TR-${r.id.slice(3)}`, origin: BANK.name, dest: r.hospital, content: `${r.units} u. ${r.component} ${r.blood}`, distance: `${dist.toFixed(1)} km`, eta: `${Math.max(5, Math.round((dist / 30) * 60))} min`, status: 'disponible', check0: false, check1: false, check2: false, scanOk: false, signOk: false, photoOrigin: null, photoDelivery: null, thermalLogs: [], reqId: r.id, priority: r.priority, area: r.area, bed: r.bed, requester: r.requester, publishedAt: Date.now() };
+  set({ tripQueue: [...(get().tripQueue || []), trip] }); patchReq({ delivery: 'despachada', tripId: trip.id });
+  return trip;
+};
+// Un transportista toma un viaje disponible: pasa a ser su viaje activo (solo uno a la vez)
+export const takeTrip = (id, user) => {
+  const q = get().tripQueue || [], t = q.find((x) => x.id === id);
+  if (!t || get().trip) return null;
+  const trip = { ...t, status: 'asignada', assignedAt: Date.now(), assignedTo: `${user.name} · ${user.unit || 'AMB-014'}` };
+  set({ trip, tripQueue: q.filter((x) => x.id !== id), temp: 4.2 });
+  if (trip.reqId && get().req?.id === trip.reqId) patchReq({ delivery: 'asignada', assignedTo: trip.assignedTo });
   return trip;
 };
 
@@ -169,5 +179,5 @@ export const attemptsOf = (u) => [
 export const demoTrip = (base) => {
   const i = get().tripIdx || 0, c = CASES[i % CASES.length], n = (get().tripSeq || 9902) + 1, dist = routeKm(c.hospital);
   set({ tripIdx: i + 1, tripSeq: n });
-  return { ...base, id: `TR-${n}`, origin: BANK.name, dest: c.hospital, content: `${c.units} u. ${c.component} ${c.blood}`, distance: `${dist.toFixed(1)} km`, eta: `${Math.max(5, Math.round((dist / 30) * 60))} min`, status: 'asignada', priority: c.priority, area: c.area, bed: c.bed, requester: `Servicio de ${c.area}`, assignedAt: Date.now(), assignedTo: 'Transportista de turno', thermalLogs: [], reqId: null };
+  return { ...base, id: `TR-${n}`, origin: BANK.name, dest: c.hospital, content: `${c.units} u. ${c.component} ${c.blood}`, distance: `${dist.toFixed(1)} km`, eta: `${Math.max(5, Math.round((dist / 30) * 60))} min`, status: 'disponible', priority: c.priority, area: c.area, bed: c.bed, requester: `Servicio de ${c.area}`, publishedAt: Date.now(), demo: true, thermalLogs: [], reqId: null };
 };

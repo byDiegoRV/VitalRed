@@ -1,5 +1,5 @@
 import { get, set, reset, currentUser, HOME, ROLES, normEmail, lockedByOther, holdLock, releaseLock } from './store.js';
-import { nextCase, nextReqId, nextApptId, activeReq, compatible, eligibleDonors, completeDonation, dispatchUnit, releaseDonor, historyOf, patchReq, addReview, CHECKS, deferralDate, deferred, demoTrip, fmtDateTime } from './domain.js';
+import { nextCase, nextReqId, nextApptId, activeReq, compatible, eligibleDonors, completeDonation, dispatchUnit, releaseDonor, takeTrip as takeTripDomain, historyOf, patchReq, addReview, CHECKS, deferralDate, deferred, demoTrip, fmtDateTime } from './domain.js';
 import { screens } from './screens.js';
 import { DEFAULT_TRIP, getTrip, getHistory } from './screens-transport.js';
 import { passwordIssues, go, toast, confirmModal, icon, esc, download } from './ui.js';
@@ -410,14 +410,17 @@ const actions = {
   },
   printLogbook() { window.print(); },
   tripCustody() { setTrip('custodia'); },
-  tripRoute() { setTrip('transito'); },
-  newTrip() { set({ trip: demoTrip(DEFAULT_TRIP) }); toast('Viaje de demostración asignado'); route(); },
+  tripRoute() { setTrip('transito'); const t = getTrip(); if (t?.reqId && get().req?.id === t.reqId) patchReq({ delivery: 'en_ruta' }); },
+  newTrip() { set({ tripQueue: [...(get().tripQueue || []), demoTrip(DEFAULT_TRIP)] }); toast('Viaje de demostración publicado'); route(); },
+  takeTrip(el) { const t = takeTripDomain(el.dataset.id, currentUser()); if (!t) return toast('No se pudo tomar el viaje: termina primero el viaje actual', 'err'); toast(`Viaje ${t.id} asignado a ti`); route(); },
   simStage() {
     const r = activeReq(); if (!r) return;
     if (r.status === 'buscando') patchReq({ status: 'esperando', donor: { name: 'Donante de prueba', email: null, blood: r.blood } });
     else if (r.status === 'esperando') { const a = { id: nextApptId(), name: 'Donante de prueba', blood: r.blood, time: '09:00', state: 'Programada' }; set({ appts: [a, ...get().appts] }); patchReq({ status: 'programada', appt: { id: a.id, time: a.time } }); }
     else if (r.status === 'programada') { set({ appts: get().appts.map((a) => (a.id === r.appt?.id ? { ...a, state: 'Completada' } : a)) }); addReview({ apptId: r.appt?.id, email: null, name: r.donor?.name || 'Donante de prueba', blood: r.donor?.blood || r.blood, decision: 'apta', checks: CHECKS, notes: 'Simulación de la etapa.', reqId: r.id, hospital: r.hospital, component: r.component }); patchReq({ status: 'completada', completedAt: new Date().toISOString(), delivery: 'preparando' }); }
     else if (r.delivery === 'preparando') dispatchUnit(DEFAULT_TRIP);
+    else if (r.delivery === 'despachada') takeTripDomain(r.tripId, get().users.find((u) => u.role === 'transport') || { name: 'Transportista de turno', unit: 'AMB-014' });
+    else if (r.delivery === 'asignada') { setTrip('transito'); patchReq({ delivery: 'en_ruta' }); }
     else if (r.delivery === 'en_ruta') { set({ trip: null }); patchReq({ delivery: 'entregada', deliveredAt: new Date().toISOString() }); }
     route();
   },
@@ -471,6 +474,7 @@ const CONFIRMS = {
   forceAssign: (el) => ({ title: `¿Forzar la asignación de ${esc(el.dataset.id)}?`, text: 'Se omitirá la asignación automática por cercanía y la unidad quedará asignada a la solicitud activa.', ok: 'Forzar asignación', ack: 'Estoy consciente de que esta acción interrumpe la asignación automática del sistema.' }),
   releaseUnit: (el) => ({ title: `¿Liberar ${esc(el.dataset.id)}?`, text: 'La unidad volverá a estar disponible para nuevas solicitudes.', ok: 'Liberar unidad' }),
   startCampaign: () => { const g = stockNow().filter(([, , st]) => st === 'CRÍTICO').map(([x]) => x); return { title: '¿Iniciar campaña de alerta?', text: `Se notificará a los donantes de los grupos en escasez: <b>${esc(g.join(', ') || 'O-')}</b>.`, ok: 'Iniciar campaña', ack: 'Estoy consciente de que se enviará una notificación a todos los donantes compatibles.' }; },
+  takeTrip: (el) => { const q = (get().tripQueue || []).find((x) => x.id === el.dataset.id); return { title: '¿Tomar este viaje?', text: `Serás responsable del traslado a <b>${esc(q?.dest)}</b> (${esc(q?.content)}).`, ok: 'Tomar viaje', ack: 'Confirmo que puedo realizar el traslado y mantener la bolsa entre 2 y 10 °C.' }; },
   endCampaign: () => ({ title: '¿Finalizar la campaña?', text: 'Los donantes dejarán de ver la convocatoria.', ok: 'Finalizar campaña' }),
   reserveReq: (el) => { const r = RESERVABLE.find((x) => x.id === el.dataset.id); return { title: '¿Aceptar y preparar la solicitud?', text: `Se reservarán <b>${r?.units} unidades ${esc(r?.blood)}</b> del inventario para ${esc(r?.hospital)}.`, ok: 'Reservar unidades' }; },
   releaseReq: () => ({ title: '¿Liberar la reserva?', text: 'Las unidades volverán al inventario disponible.', ok: 'Liberar reserva' }),
