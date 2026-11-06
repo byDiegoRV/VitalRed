@@ -1,8 +1,8 @@
 import { get, set, reset, currentUser, HOME, ROLES, normEmail, lockedByOther, holdLock, releaseLock } from './store.js';
-import { nextCase, nextReqId, nextApptId, activeReq, compatible, eligibleDonors, completeDonation, dispatchUnit, releaseDonor, takeTrip as takeTripDomain, historyOf, patchReq, addReview, CHECKS, deferralDate, deferred, demoTrip, fmtDateTime } from './domain.js';
+import { nextCase, nextReqId, nextApptId, activeReq, compatible, eligibleDonors, completeDonation, dispatchUnit, releaseDonor, takeTrip as takeTripDomain, historyOf, patchReq, addReview, CHECKS, deferralDate, deferred, demoTrip, fmtDateTime, ago } from './domain.js';
 import { screens } from './screens.js';
 import { DEFAULT_TRIP, getTrip, getHistory } from './screens-transport.js';
-import { passwordIssues, go, toast, confirmModal, icon, esc, download } from './ui.js';
+import { passwordIssues, go, toast, confirmModal, notifModal, icon, esc, download } from './ui.js';
 import { guard } from './flow.js';
 import { stockNow, RESERVABLE, reportCsv, reportDoc } from './screens-ui.js';
 
@@ -15,7 +15,7 @@ const NAV = {
 
 const NAV_PARENT = {
   't/check': 't/home', 't/manual': 't/home', 't/transit': 't/home', 't/delivery': 't/home', 't/logbook': 't/home',
-  'd/triage': 'd/alert', 'd/review': 'd/alert', 'd/schedule': 'd/alert', 'd/rejected': 'd/alert', 'd/done': 'd/profile', 'd/pdf': 'd/profile',
+  'd/triage': 'd/alert', 'd/review': 'd/alert', 'd/schedule': 'd/alert', 'd/rejected': 'd/alert', 'd/done': 'd/profile', 'd/pdf': 'd/history',
   'm/reception': 'm/radar', 'm/none': 'm/radar', 'd/history': 'd/home', 'd/medical': 'd/home', 'm/detail': 'm/dashboard', 'b/evaluate': 'b/appts', 'b/deny': 'b/appts', 'b/record': 'b/records'
 };
 
@@ -25,6 +25,12 @@ let cleanup = null, lastPath = null;
 function parseHash() {
   const [path, qs] = (location.hash.slice(2) || 'login').split('?');
   return { path, q: Object.fromEntries(new URLSearchParams(qs)) };
+}
+
+function userNotifications(user) {
+  if (!user) return [];
+  const list = get().notifications || [];
+  return list.filter((n) => n.recipient === user.role || n.recipient === user.email || n.role === user.role);
 }
 
 function route() {
@@ -37,13 +43,37 @@ function route() {
   if (!screen.role && user && ['login', 'register'].includes(path)) return go(HOME[user.role]);
   const blocked = user && guard(path, get());
   if (blocked) { toast(blocked[1], 'err'); return go(blocked[0], true); }
+
   document.documentElement.dataset.theme = get().theme;
   document.body.dataset.role = user?.role || 'guest';
-
   const showBack = !!NAV_PARENT[path];
 
+  const notifs = userNotifications(user);
+  const unreadCount = notifs.filter((n) => !n.read).length;
+
   const draw = () => {
-    app.innerHTML = `<div class="page"><header class="hdr"><div class="row" style="flex:none">${showBack ? `<button class="btn ghost sm" data-act="back">← Volver</button>` : ''}<div class="logo" data-go="${user ? HOME[user.role] : 'splash'}"><i>${icon('drop', 18)}</i>VitalRed</div></div><div class="row" style="flex:none">${user ? `<div class="who"><b>${user.name}</b><small>${ROLES[user.role]}</small></div><button class="btn ghost sm" data-act="logout">Salir</button>` : ''}<button class="btn ghost sm" data-act="theme" aria-label="Cambiar tema">${icon(get().theme === 'dark' ? 'moon' : 'sun', 18)}</button></div></header>${user ? `<nav class="tabs">${NAV[user.role].map(([r, l, i]) => `<a href="#/${r}" class="${r === path || NAV_PARENT[path] === r ? 'on' : ''}">${icon(i, 18)}<span>${l}</span></a>`).join('')}</nav>` : ''}<main class="${screen.wide ? 'wide' : ''}">${screen.render({ q })}</main><footer>VitalRed v3.0 • Prototipo simulado • <a data-act="resetDemo">Reiniciar demo</a></footer></div>`;
+    app.innerHTML = `<div class="page">
+      <header class="hdr">
+        <div class="row" style="flex:none">
+          ${showBack ? `<button class="btn ghost sm" data-act="back">← Volver</button>` : ''}
+          <div class="logo" data-go="${user ? HOME[user.role] : 'splash'}"><i>${icon('drop', 18)}</i>VitalRed</div>
+        </div>
+        <div class="row" style="flex:none;align-items:center">
+          ${user ? `
+            <button class="btn ghost sm notif-btn" data-act="openNotifs" aria-label="Notificaciones (${unreadCount} no leídas)">
+              ${icon('bell', 18)}
+              ${unreadCount > 0 ? `<span class="notif-badge">${unreadCount > 9 ? '9+' : unreadCount}</span>` : ''}
+            </button>
+            <div class="who"><b>${user.name}</b><small>${ROLES[user.role]}</small></div>
+            <button class="btn ghost sm" data-act="logout">Salir</button>
+          ` : ''}
+          <button class="btn ghost sm" data-act="theme" aria-label="Cambiar tema">${icon(get().theme === 'dark' ? 'moon' : 'sun', 18)}</button>
+        </div>
+      </header>
+      ${user ? `<nav class="tabs">${NAV[user.role].map(([r, l, i]) => `<a href="#/${r}" class="${r === path || NAV_PARENT[path] === r ? 'on' : ''}">${icon(i, 18)}<span>${l}</span></a>`).join('')}</nav>` : ''}
+      <main class="${screen.wide ? 'wide' : ''}">${screen.render({ q })}</main>
+      <footer>VitalRed v3.0 — Prototipo simulado — <a data-act="resetDemo">Reiniciar demo</a></footer>
+    </div>`;
     cleanup?.();
     cleanup = screen.mount?.(app.querySelector('main'), draw) || null;
   };
@@ -63,7 +93,7 @@ const clearErrs = () => {
   document.querySelectorAll('input.bad').forEach((i) => i.classList.remove('bad'));
   document.querySelectorAll('.err').forEach((e) => (e.textContent = ''));
 };
-// Datos obligatorios del paciente en la solicitud
+
 const reqErrors = () => {
   const e = {}, name = val('patient'), hc = val('hc'), bed = val('bed');
   if (name.length < 3) e.patient = 'Escribe el nombre completo del paciente';
@@ -71,7 +101,8 @@ const reqErrors = () => {
   if (!bed) e.bed = 'Indica la cama o ubicación';
   return e;
 };
-const busyMsg = (l) => `Ya hay una sesión activa (${l.name} · ${ROLES[l.role]}) en otra pestaña. Ciérrala para iniciar con otro perfil.`;
+
+const busyMsg = (l) => `Ya hay una sesión activa (${l.name} — ${ROLES[l.role]}) en otra pestaña. Ciérrala para iniciar con otro perfil.`;
 const enter = (user) => {
   const other = lockedByOther();
   if (other) { toast(busyMsg(other), 'err'); return false; }
@@ -80,9 +111,10 @@ const enter = (user) => {
   go(HOME[user.role]);
   return true;
 };
+
 const setTrip = (status) => { const t = getTrip(); set({ trip: { ...t, status, ...(status === 'transito' && !t.startedAt ? { startedAt: Date.now() } : {}) } }); };
 const selAppt = () => { const A = get().appts; return A.find((a) => a.id === get().selAppt) || A[0]; };
-// Cambia el estado de una cita; al completarse se registra la donación en el historial del donante y avanza su solicitud
+
 const stepAppt = (a, state) => {
   set({ appts: get().appts.map((x) => (x.id === a.id ? { ...x, state } : x)) });
   if (get().myAppt?.id === a.id) set({ myAppt: { ...get().myAppt, state } });
@@ -143,7 +175,6 @@ const missing = (names, d) => {
   if (m.length) toast('Responde todas las preguntas para continuar', 'err');
   return !m.length;
 };
-
 const emailTaken = (e) => get().users.some((u) => normEmail(u.email) === e);
 const medicalOf = (d) => ({ gender: d.gender, age: d.age, weight: d.weight, blood: d.blood || 'O+', risk0: d.risk0, risk1: d.risk1, risk2: d.risk2, fem: d.fem });
 
@@ -169,6 +200,34 @@ const actions = {
     const parent = NAV_PARENT[path];
     if (parent) go(parent);
     else window.history.back();
+  },
+  openNotifs() {
+    const u = currentUser();
+    if (!u) return;
+    const notifs = userNotifications(u).map((n) => ({
+      ...n,
+      time: ago(n.at)
+    }));
+
+    notifModal(
+      notifs,
+      (id, targetGo) => {
+        set({
+          notifications: (get().notifications || []).map((n) => (n.id === id ? { ...n, read: true } : n))
+        });
+        route();
+        if (targetGo) go(targetGo);
+      },
+      () => {
+        set({
+          notifications: (get().notifications || []).map((n) =>
+            n.recipient === u.role || n.recipient === u.email || n.role === u.role ? { ...n, read: true } : n
+          )
+        });
+        toast('Notificaciones marcadas como leídas');
+        route();
+      }
+    );
   },
   toggleCheck(el) {
     const idx = el.dataset.idx;
@@ -204,7 +263,7 @@ const actions = {
   },
   simElevated() {
     set({ temp: 7.2, simMode: 'heat' });
-    toast('Elevación Térmica (>6 °C) inyectada');
+    toast('Elevación térmica (>6 °C) inyectada');
     route();
   },
   simOffline() {
@@ -213,7 +272,7 @@ const actions = {
     route();
   },
   openSimModal() {
-    confirmModal('Simulador de Telemetría Térmica IoT', `<div class="stack" style="text-align:left"><p class="mut"><small>Inyección de estados para pruebas de resistencia</small></p><div class="row"><button class="btn ok sm" data-act="simNormal">🟢 Rango Normal (2-5.5 °C)</button><button class="btn warn sm" data-act="simElevated">🔴 Elevación Térmica (>6 °C)</button></div><div class="row" style="margin-top:8px"><button class="btn ghost sm" data-act="simOffline">⚠️ Sensor Offline (Pérdida)</button></div></div>`, () => {}, 'Cerrar');
+    confirmModal('Simulador de Telemetría Térmica IoT', `<div class="stack" style="text-align:left"><p class="mut"><small>Inyección de estados para pruebas de resistencia</small></p><div class="row"><button class="btn ok sm" data-act="simNormal">✔ Rango Normal (2-5.5 °C)</button><button class="btn warn sm" data-act="simElevated">⚠ Elevación térmica (>6 °C)</button></div><div class="row" style="margin-top:8px"><button class="btn ghost sm" data-act="simOffline">✖ Sensor Offline (Pérdida)</button></div></div>`, () => {}, 'Cerrar');
   },
   eye(el) {
     const i = el.previousElementSibling, show = i.type === 'password';
@@ -302,8 +361,9 @@ const actions = {
     toast('Donación denegada y registrada', 'err'); go(`b/record?id=${rec.id}`);
   },
   filterRec(el) { set({ recFilter: el.dataset.v }); route(); },
+  filterDonorHist(el) { set({ donorHistFilter: el.dataset.v }); route(); },
   ackNotice(el) { const id = el.id || el.dataset?.id; set({ reviews: (get().reviews || []).map((r) => (r.id === id ? { ...r, seen: true } : r)) }); route(); },
-  dispatch() { const t = dispatchUnit(DEFAULT_TRIP); if (!t) return toast('La unidad aún no está lista para despacho', 'err'); toast(`Unidad despachada · viaje ${t.id}`); route(); },
+  dispatch() { const t = dispatchUnit(DEFAULT_TRIP); if (!t) return toast('La unidad aún no está lista para despacho', 'err'); toast(`Unidad despachada — viaje ${t.id}`); route(); },
   say(el) { toast(el.dataset.msg); },
   submitTriage() { set({ triageAns: [0, 1, 2, 3, 4].map((i) => sel('t' + i)) }); go('d/review'); },
   confirmTriage() { const pass = get().triageAns.every((v, i) => v === ['no', 'no', 'no', 'yes', 'yes'][i]); set({ triage: pass, inFlow: pass ? get().inFlow : false }); go(pass ? 'd/schedule' : 'd/rejected'); },
@@ -425,7 +485,7 @@ const actions = {
     route();
   },
   sigToggle(el) { const on = el.classList.toggle('ok'); el.textContent = on ? el.dataset.done : el.dataset.todo; document.querySelector('main')?.dispatchEvent(new Event('selchange')); },
-  receive() { patchReq({ status: 'cerrada', receivedAt: new Date().toISOString() }); toast('Recepción confirmada · transfusión iniciada'); go('m/radar'); },
+  receive() { patchReq({ status: 'cerrada', receivedAt: new Date().toISOString() }); toast('Recepción confirmada — transfusión iniciada'); go('m/radar'); },
   saveMedical() {
     const fd = Object.fromEntries(new FormData(document.getElementById('medForm'))), u = currentUser();
     const miss = ['gender', 'age', 'weight', 'risk0', 'risk1', 'risk2'].concat(fd.gender === 'f' ? ['fem'] : []).filter((n) => !fd[n]);
@@ -434,7 +494,7 @@ const actions = {
     const risky = [0, 1, 2].some((i) => fd['risk' + i] === 'yes') || (fd.gender === 'f' && fd.fem === 'yes'), eligible = fd.age === 'adult' && fd.weight === 'ok' && !risky;
     const medical = { gender: fd.gender, age: fd.age, weight: fd.weight, blood: fd.blood || u.blood, risk0: fd.risk0, risk1: fd.risk1, risk2: fd.risk2, fem: fd.gender === 'f' ? fd.fem : undefined };
     set({ users: get().users.map((x) => (x.email === u.email ? { ...x, blood: medical.blood, medical, status: eligible ? 'Apto para donar' : 'Diferido temporalmente' } : x)) });
-    toast(eligible ? 'Datos médicos actualizados · Apto para donar' : 'Datos actualizados · Donación diferida temporalmente'); go('d/home');
+    toast(eligible ? 'Datos médicos actualizados — Apto para donar' : 'Datos actualizados — Donación diferida temporalmente'); go('d/home');
   },
   scanAppt() {
     const done = ['Completada', 'No asistió', 'Rechazada'], cur = selAppt(), next = cur && !done.includes(cur.state) ? cur : get().appts.find((a) => !done.includes(a.state));
@@ -445,8 +505,6 @@ const actions = {
   export() { toast('Reporte NOM-253 exportado (simulado)'); }
 };
 
-// Acciones que piden confirmación (y, si es crítica, una declaración "estoy consciente").
-// Devuelve null cuando todavía no corresponde confirmar (p. ej. falta un dato) para que la acción muestre su propio aviso.
 const CONFIRMS = {
   accept: () => ({ title: '¿Atender esta alerta?', text: 'Iniciarás el pre-triaje médico y podrás agendar tu donación.', ok: 'Sí, quiero donar', ack: 'Estoy consciente de que mi aptitud será validada por personal médico antes de donar.' }),
   confirmTriage: () => ({ title: '¿Confirmas tus respuestas?', text: 'Una vez confirmadas no podrás modificarlas en este proceso.', ok: 'Confirmar respuestas', ack: 'Declaro que mis respuestas son verídicas y entiendo que ocultar información puede poner en riesgo a un paciente.' }),
