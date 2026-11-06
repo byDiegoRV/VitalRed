@@ -12,17 +12,31 @@ const answered = (s) => Array.isArray(s.triageAns) && s.triageAns.length === 5 &
 export const donorStage = (s, u) => {
   const a = s.myAppt && s.myAppt.email === u.email ? s.myAppt : null;
   if (a && a.state === 'Completada') return 'done';
-  if (a && a.state !== 'No asistió') return 'booked';
+  if (a && a.state !== 'No asistió' && a.state !== 'Rechazada') return 'booked';
   if (!s.inFlow || s.flowOwner !== u.email) return 'idle';
   if (s.triage === true) return 'schedule';
   return answered(s) ? 'review' : 'triage';
 };
+
 export const STAGE_HOME = { idle: 'd/alert', triage: 'd/triage', review: 'd/review', schedule: 'd/schedule', booked: 'd/qr', done: 'd/done' };
 const STAGE_MSG = {
-  idle: 'Primero acepta una alerta de donación', triage: 'Completa tu pre-triaje para continuar', review: 'Confirma tus respuestas del pre-triaje',
-  schedule: 'Tu pre-triaje ya fue confirmado: agenda tu cita', booked: 'Ya tienes una cita agendada', done: 'Tu donación ya fue completada',
+  idle: 'Primero acepta una alerta de donación',
+  triage: 'Completa tu pre-triaje para continuar',
+  review: 'Confirma tus respuestas del pre-triaje',
+  schedule: 'Tu pre-triaje ya fue confirmado: agenda tu cita',
+  booked: 'Ya tienes una cita agendada',
+  done: 'Tu donación ya fue completada',
 };
-const DONOR_ALLOWED = { idle: ['d/alert'], triage: ['d/triage'], review: ['d/review', 'd/triage'], schedule: ['d/schedule'], booked: ['d/qr'], done: ['d/done', 'd/pdf', 'd/alert'] };
+
+const DONOR_ALLOWED = {
+  idle: ['d/alert'],
+  triage: ['d/triage'],
+  review: ['d/review', 'd/triage'],
+  schedule: ['d/schedule'],
+  booked: ['d/qr'],
+  done: ['d/done', 'd/alert']
+};
+
 const donorRule = (path) => (s) => {
   const u = currentUser(); if (!u) return null;
   const st = donorStage(s, u);
@@ -39,7 +53,11 @@ function transit() {
 }
 
 const RULES = {
-  ...Object.fromEntries(['d/alert', 'd/triage', 'd/review', 'd/schedule', 'd/rejected', 'd/done', 'd/pdf'].map((p) => [p, donorRule(p)])),
+  // Las etapas del flujo secuencial de donación:
+  ...Object.fromEntries(['d/alert', 'd/triage', 'd/review', 'd/schedule', 'd/rejected', 'd/done'].map((p) => [p, donorRule(p)])),
+
+  // La constancia oficial d/pdf se permite a cualquier donante con historial en cualquier momento:
+  'd/pdf': () => null,
 
   // ---- Médico
   'm/new': () => (activeReq() ? ['m/radar', 'Ya tienes una solicitud en curso: cancélala o espera a que se complete'] : null),
