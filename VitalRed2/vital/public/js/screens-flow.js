@@ -2,7 +2,7 @@ import { get, set, currentUser } from './store.js';
 import { esc } from './ui.js';
 import { BANK } from './maps.js';
 import { activeReq, compatible, routeKm, historyOf, fmtDate, nextEligible, daysUntil, COMPONENTS, AREAS, HOSPITAL_LIST, DIAGNOSES, slotsFromNow, attemptsOf, statusOf, deferred, reasonLabel, fmtDateTime, hhmm } from './domain.js';
-import { pwRules, bindPwRules, btn, card, field, toggle, flow, stepper, qrPattern, statusScreen, icon, badge } from './ui.js';
+import { pwRules, bindPwRules, btn, card, field, toggle, flow, stepper, qrPattern, statusScreen, icon, badge, emptyState } from './ui.js';
 
 const YN = [['yes', 'S '], ['no', 'NO']];
 const TRIAGE = ['¿Has tomado antibióticos, aspirinas o antiinflamatorios durante los últimos 7 días?', '¿Presentas fiebre, gripe o malestar en este momento?', '¿Has ingerido alcohol o sustancias en las últimas 48 horas?', '¿Cuentas con un ayuno de al menos 4 horas y has ingerido líquidos hoy?', '¿Dormiste al menos 6 horas anoche?'];
@@ -58,7 +58,12 @@ export const flowScreens = {
     role: 'donor',
     render: () => {
       const u = currentUser(), a = get().myAppt && get().myAppt.email === u.email ? get().myAppt : null, q = activeReq();
-      if (!a) return statusScreen(icon('calendar', 44), 'Aún no tienes citas', 'Agenda una cita al responder una alerta de donación.', btn('Ver alertas', { go: 'd/alert' }));
+      if (!a) return emptyState({
+        iconName: 'calendar',
+        title: 'Aún no tienes citas agendadas',
+        text: 'Agenda una cita al responder una alerta de donación para obtener tu Pase Digital QR de acceso prioritario.',
+        actionBtn: btn('Ver alertas de emergencia', { go: 'd/alert' })
+      });
       if (a.state === 'Completada') return statusScreen(icon('check', 44), 'Donación completada', 'Tu donación quedó registrada en tu historial.', `${btn('Ver mi donación', { go: 'd/done' })}${btn('Ver historial', { go: 'd/history', v: 'ghost' })}`);
       return `<h2 class="ptitle">Paso 4: Pase de Acceso</h2>${fl(4, 'PASE')}<h2 class="center" style="color:var(--ok-text)">¡Cita Confirmada!</h2><div class="qr">${qrPattern(a.id)}</div><p class="center"><small class="lbl">FOLIO DE ACCESO</small><br><b style="font-size:22px">${esc(a.id)}</b></p>${card(`<b>${BANK.name}</b><p class="mut">${q && q.donor?.email === u.email ? `Para ${esc(q.hospital)} — ` : ''}${today()} — ${esc(a.time)}</p><p class="mut">${esc(u.name)} — Tipo ${esc(u.blood || 'O+')}</p><p class="mut">Estado: <b>${a.state === 'Extracción' ? 'En extracción' : 'Esperando tu llegada'}</b></p>`)}<div class="banner info">Presenta este pase en el Banco de Sangre. El personal registrará tu donación al terminar.</div><div class="stack">${btn('Cancelar Cita', { act: 'endFlow', go: 'd/profile', v: 'ghost' })}</div>`;
     },
@@ -171,7 +176,12 @@ export const flowScreens = {
         </div>
         ${filtered.length
           ? `<div class="reqs">${filtered.map(renderItem).join('')}</div>`
-          : statusScreen(icon('drop', 44), 'No hay registros en esta sección', f === 'all' ? 'Cuando asistas a tu primera cita de donación, aquí aparecerá tu historial con su constancia digital.' : 'No tienes registros que coincidan con el filtro seleccionado.', btn('Ver alertas de emergencia', { go: 'd/alert' }))
+          : emptyState({
+              iconName: 'drop',
+              title: 'No hay registros en esta sección',
+              text: f === 'all' ? 'Cuando asistas a tu primera cita de donación, aquí aparecerá tu historial con su constancia digital.' : 'No tienes registros que coincidan con el filtro seleccionado.',
+              actionBtn: btn('Ver alertas de emergencia', { go: 'd/alert' })
+            })
         }
       `;
     },

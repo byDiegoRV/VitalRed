@@ -1,10 +1,10 @@
-import { get, set, reset, currentUser, HOME, ROLES, normEmail, lockedByOther, holdLock, releaseLock } from './store.js';
-import { nextCase, nextReqId, nextApptId, activeReq, compatible, eligibleDonors, completeDonation, dispatchUnit, releaseDonor, takeTrip as takeTripDomain, historyOf, patchReq, addReview, CHECKS, deferralDate, deferred, demoTrip, fmtDateTime, ago } from './domain.js';
+import { get, set, reset, currentUser, HOME, ROLES, normEmail, lockedByOther, holdLock, releaseLock, getInventory, checkExpirations, getUnitExpirationInfo, addInventoryItem, updateInventoryItem, removeInventoryItem } from './store.js';
+import { nextCase, nextReqId, nextApptId, activeReq, compatible, eligibleDonors, completeDonation, dispatchUnit, releaseDonor, takeTrip as takeTripDomain, historyOf, patchReq, addReview, CHECKS, deferralDate, deferred, demoTrip, fmtDateTime, ago, calculateExpirationDate } from './domain.js';
 import { screens } from './screens.js';
 import { DEFAULT_TRIP, getTrip, getHistory } from './screens-transport.js';
 import { passwordIssues, go, toast, confirmModal, notifModal, icon, esc, download } from './ui.js';
 import { guard } from './flow.js';
-import { stockNow, RESERVABLE, reportCsv, reportDoc } from './screens-ui.js';
+import { stockNow, RESERVABLE, reportCsv, reportDoc, openNewBagModal, openUnitDetailModal } from './screens-ui.js';
 
 const NAV = {
   donor: [['d/home', 'Inicio', 'home'], ['d/alert', 'Donar', 'drop'], ['d/qr', 'Citas', 'calendar'], ['d/profile', 'Perfil', 'user']],
@@ -52,6 +52,24 @@ function route() {
   const unreadCount = notifs.filter((n) => !n.read).length;
 
   const draw = () => {
+    let mainHtml = '';
+    try {
+      mainHtml = screen.render({ q });
+    } catch (err) {
+      console.error('[VitalRed screen render error]', err);
+      mainHtml = `
+        <div class="empty-state error" role="alert" style="margin:40px auto;max-width:540px">
+          <div class="empty-icon" style="color:var(--red-solid)">${icon('alert', 48)}</div>
+          <h2 class="empty-title">Error al cargar la pantalla</h2>
+          <p class="empty-desc">Ocurrió un error inesperado al procesar los datos de esta vista (${esc(path)}). Puedes restablecer los datos de demostración para volver a un estado consistente.</p>
+          <div class="empty-action" style="display:flex;gap:10px;justify-content:center;margin-top:14px">
+            <button class="btn primary sm" data-act="resetDemo" type="button" style="width:auto">Restablecer demo</button>
+            <button class="btn ghost sm" onclick="location.reload()" type="button" style="width:auto">Recargar página</button>
+          </div>
+        </div>
+      `;
+    }
+
     app.innerHTML = `<div class="page">
       <header class="hdr">
         <div class="row" style="flex:none">
@@ -71,7 +89,7 @@ function route() {
         </div>
       </header>
       ${user ? `<nav class="tabs">${NAV[user.role].map(([r, l, i]) => `<a href="#/${r}" class="${r === path || NAV_PARENT[path] === r ? 'on' : ''}">${icon(i, 18)}<span>${l}</span></a>`).join('')}</nav>` : ''}
-      <main class="${screen.wide ? 'wide' : ''}">${screen.render({ q })}</main>
+      <main class="${screen.wide ? 'wide' : ''}">${mainHtml}</main>
       <footer>VitalRed v3.0 — Prototipo simulado — <a data-act="resetDemo">Reiniciar demo</a></footer>
     </div>`;
     cleanup?.();
@@ -85,12 +103,23 @@ const sel = (name) => document.querySelector(`input[name="${name}"]:checked`)?.v
 const fail = (id, msg) => {
   const i = document.getElementById(id);
   i?.classList.add('bad');
+  i?.setAttribute('aria-invalid', 'true');
   const e = document.getElementById(id + '-err');
-  if (e) e.textContent = msg;
+  if (e) {
+    e.textContent = msg;
+    e.setAttribute('role', 'alert');
+    e.setAttribute('aria-live', 'polite');
+    if (i && !i.getAttribute('aria-describedby')) {
+      i.setAttribute('aria-describedby', id + '-err');
+    }
+  }
   return false;
 };
 const clearErrs = () => {
-  document.querySelectorAll('input.bad').forEach((i) => i.classList.remove('bad'));
+  document.querySelectorAll('input.bad, select.bad, textarea.bad').forEach((i) => {
+    i.classList.remove('bad');
+    i.removeAttribute('aria-invalid');
+  });
   document.querySelectorAll('.err').forEach((e) => (e.textContent = ''));
 };
 
@@ -297,6 +326,26 @@ const actions = {
     const f = { ...(get().fleet || {}) }; delete f[el.dataset.id];
     set({ fleet: f }); toast(`${el.dataset.id} liberada`); route();
   },
+  releaseTrip() {
+    const cur = getTrip();
+    if (!cur) return;
+    const queue = get().tripQueue || [];
+    if (!queue.some((q) => q.id === cur.id)) {
+      queue.unshift({
+        id: cur.id,
+        origin: cur.origin,
+        dest: cur.dest,
+        content: cur.content,
+        distance: cur.distance,
+        eta: cur.eta,
+        publishedAt: Date.now()
+      });
+    }
+    set({ trip: null, tripQueue: queue });
+    toast('Viaje liberado y devuelto a la lista de disponibles', 'ok');
+    go('t/home');
+    route();
+  },
   startCampaign() {
     const groups = stockNow().filter(([, , st]) => st === 'CRÍTICO').map(([g]) => g);
     const blood = groups.length ? groups : ['O-'];
@@ -304,6 +353,19 @@ const actions = {
     toast(`Campaña iniciada para ${blood.join(', ')}`); route();
   },
   endCampaign() { set({ campaign: null }); toast('Campaña finalizada'); route(); },
+  openNewBagModal() {
+    openNewBagModal(() => route());
+  },
+  resetInvFilters() {
+    set({ invSearch: '', invBlood: 'Todos', invComponent: 'Todos', invStatus: 'Todos' });
+    route();
+  },
+  viewBagDetail(el) {
+    const id = el.dataset.id;
+    const unit = (get().inventory || []).find((u) => u.id === id);
+    if (!unit) return toast('Unidad no encontrada', 'err');
+    openUnitDetailModal(unit, () => route());
+  },
   reserveReq(el) {
     const id = el.dataset.id, r = RESERVABLE.find((x) => x.id === id);
     if (!r) return;
@@ -317,16 +379,57 @@ const actions = {
     const held = (get().reserved || []).includes(r.id);
     confirmModal(`Solicitud ${esc(r.id)}`, `<b>${esc(r.hospital)}</b><br>${esc(r.reason)}<br>Reclama: ${r.units} unidades ${esc(r.blood)}.<br>Estado: ${held ? 'Reservada' : 'Pendiente de preparar'}.`, () => { if (!held) actions.reserveReq(el); }, held ? 'Entendido' : 'Aceptar y preparar', { cancel: 'Cerrar' });
   },
-  exportCsv() { download(`reporte-trazabilidad-${new Date().toISOString().slice(0, 10)}.csv`, reportCsv()); toast('Reporte CSV descargado'); },
-  exportPdf() {
-    const sheet = document.createElement('div'); sheet.className = 'print-sheet'; sheet.innerHTML = reportDoc();
-    document.body.append(sheet); document.body.classList.add('printing-sheet');
-    const end = () => { sheet.remove(); document.body.classList.remove('printing-sheet'); removeEventListener('afterprint', end); };
-    addEventListener('afterprint', end); setTimeout(end, 60000); window.print();
+  exportCsv(el) {
+    if (el) {
+      el.classList.add('loading');
+      el.setAttribute('aria-busy', 'true');
+    }
+    toast('Generando reporte CSV de trazabilidad...', 'ok');
+    setTimeout(() => {
+      download(`reporte-trazabilidad-${new Date().toISOString().slice(0, 10)}.csv`, reportCsv());
+      toast('Reporte CSV descargado');
+      if (el) {
+        el.classList.remove('loading');
+        el.removeAttribute('aria-busy');
+      }
+    }, 400);
+  },
+  exportPdf(el) {
+    if (el) {
+      el.classList.add('loading');
+      el.setAttribute('aria-busy', 'true');
+    }
+    toast('Preparando vista de impresión para PDF...', 'ok');
+    setTimeout(() => {
+      const sheet = document.createElement('div'); sheet.className = 'print-sheet'; sheet.innerHTML = reportDoc();
+      document.body.append(sheet); document.body.classList.add('printing-sheet');
+      const end = () => {
+        sheet.remove();
+        document.body.classList.remove('printing-sheet');
+        removeEventListener('afterprint', end);
+        if (el) {
+          el.classList.remove('loading');
+          el.removeAttribute('aria-busy');
+        }
+      };
+      addEventListener('afterprint', end);
+      setTimeout(end, 60000);
+      window.print();
+    }, 350);
+  },
+  retryMap() {
+    toast('Reconectando mapas y servicio de rutas...', 'ok');
+    route();
   },
   theme() { set({ theme: get().theme === 'dark' ? 'light' : 'dark' }); route(); },
   logout() { confirmModal('Cerrar sesión', '¿Deseas salir de VitalRed?', () => { releaseLock(); set({ session: null, reg: null }); toast('Sesión cerrada'); go('login'); }); },
-  resetDemo() { confirmModal('Reiniciar demo', 'Se borrarán usuarios y datos creados.', () => { releaseLock(); reset(); go('login'); route(); }); },
+  resetDemo() {
+    releaseLock();
+    reset();
+    toast('Demostración reiniciada al estado de fábrica');
+    go('login');
+    route();
+  },
   demoAlert() {
     if (activeReq()) return toast('Ya hay una solicitud en curso', 'err');
     const u = currentUser(), c = nextCase(u?.blood || 'O+'), now = Date.now();
@@ -343,7 +446,18 @@ const actions = {
     const a = selAppt(); if (!a || a.state !== 'Extracción') return toast('Primero autoriza el ingreso de la donación', 'err');
     if (![...document.querySelectorAll('.chkq')].every((c) => c.checked)) return toast('Marca los 4 controles para aprobar la donación', 'err');
     const r = get().req, linked = r && a.email && r.donor?.email === a.email;
-    const rec = addReview({ apptId: a.id, email: a.email || null, name: a.name, blood: a.blood, decision: 'apta', checks: CHECKS, notes: val('evalNotes'), reqId: linked ? r.id : null, hospital: linked ? r.hospital : null, component: linked ? r.component : 'Sangre total' });
+    const comp = linked ? r.component : 'Sangre total';
+    const today = new Date().toISOString().slice(0, 10);
+    addInventoryItem({
+      blood: a.blood || 'O+',
+      component: comp,
+      volume: comp.includes('total') ? 450 : 300,
+      extractedAt: today,
+      expiresAt: calculateExpirationDate(comp, today),
+      donorName: a.name,
+      notes: `Donación aprobada folio ${a.id}. Controles de calidad NOM-253 aprobados.`
+    });
+    const rec = addReview({ apptId: a.id, email: a.email || null, name: a.name, blood: a.blood, decision: 'apta', checks: CHECKS, notes: val('evalNotes'), reqId: linked ? r.id : null, hospital: linked ? r.hospital : null, component: comp });
     stepAppt(a, 'Completada'); toast(`Donación aprobada: ${a.name}`); go(`b/record?id=${rec.id}`);
   },
   denyDonation() {
@@ -399,12 +513,12 @@ const actions = {
     toast('Código Rojo lanzado'); go('m/radar');
   },
   cancelReq() {
-    confirmModal('¿Deseas cancelar la búsqueda?', 'Afectará la atención del paciente.', () => {
+    confirmModal('¿Deseas cancelar la búsqueda?', 'Se suspenderá la búsqueda de donantes y el traslado de hemocomponentes. Esta acción afectará la atención del paciente en Quirófano/Urgencias.', () => {
       const prev = get().req, prevAppts = get().appts, prevMy = get().myAppt;
       if (prev.donor) set({ inFlow: false, triage: null, triageAns: null, myAppt: null, appts: get().appts.filter((a) => !prev.appt || a.id !== prev.appt.id) });
       patchReq({ status: 'cancelada' }); go('m/none');
       toast('Solicitud cancelada', 'ok', { label: 'Deshacer (5s)', run: () => { set({ req: prev, appts: prevAppts, myAppt: prevMy }); toast('Cancelación revertida'); go('m/radar'); } });
-    }, 'Sí, cancelar');
+    }, 'Sí, cancelar', { danger: true, cancel: 'Continuar búsqueda' });
   },
   noResp() { patchReq({ status: 'sinrespuesta' }); },
   retry() { const { donor, appt, ...rest } = get().req; set({ req: { ...rest } }); patchReq({ status: 'buscando', notified: eligibleDonors(rest.blood, rest.excluded || []).length }); toast('Ampliando radio a 15 km'); go('m/radar'); },
@@ -509,10 +623,10 @@ const CONFIRMS = {
   accept: () => ({ title: '¿Atender esta alerta?', text: 'Iniciarás el pre-triaje médico y podrás agendar tu donación.', ok: 'Sí, quiero donar', ack: 'Estoy consciente de que mi aptitud será validada por personal médico antes de donar.' }),
   confirmTriage: () => ({ title: '¿Confirmas tus respuestas?', text: 'Una vez confirmadas no podrás modificarlas en este proceso.', ok: 'Confirmar respuestas', ack: 'Declaro que mis respuestas son verídicas y entiendo que ocultar información puede poner en riesgo a un paciente.' }),
   confirmSlot: () => (sel('slot') ? { title: '¿Confirmar tu cita?', text: `Se agendará tu donación a las <b>${esc(sel('slot'))}</b>.`, ok: 'Confirmar cita' } : null),
-  endFlow: () => ({ title: '¿Cancelar tu cita?', text: 'Se liberará tu horario y tendrás que agendar de nuevo.', ok: 'Cancelar cita', cancel: 'Conservar cita' }),
-  declineFlow: () => ({ title: '¿Ya no puedes donar?', text: 'Liberaremos tu lugar y avisaremos al hospital para seguir buscando otro donante.', ok: 'Sí, ya no puedo', cancel: 'Seguir con mi cita' }),
+  endFlow: () => ({ title: '¿Cancelar tu cita?', text: 'Se liberará tu horario y tendrás que agendar de nuevo.', ok: 'Cancelar cita', cancel: 'Conservar cita', danger: true }),
+  declineFlow: () => ({ title: '¿Ya no puedes donar?', text: 'Liberaremos tu lugar y avisaremos al hospital para seguir buscando otro donante.', ok: 'Sí, ya no puedo', cancel: 'Seguir con mi cita', danger: true }),
   approveDonation: () => { const a = selAppt(); return [...document.querySelectorAll('.chkq')].every((c) => c.checked) ? { title: '¿Aprobar la donación?', text: `La sangre de <b>${esc(a?.name)}</b> quedará aprobada y se registrará en su historial.`, ok: 'Aprobar donación', ack: 'Confirmo que se verificaron los 4 controles y que la sangre no presenta problemas.' } : null; },
-  denyDonation: () => { const a = selAppt(); return document.querySelector('.rsn:checked') ? { title: '¿Denegar la donación?', text: `Se notificará a <b>${esc(a?.name)}</b>, quedará registrado el motivo y la solicitud buscará a otro donante.`, ok: 'Denegar donación', ack: 'Estoy consciente de que esta decisión queda registrada en el historial del donante y en la bitácora.' } : null; },
+  denyDonation: () => { const a = selAppt(); return document.querySelector('.rsn:checked') ? { title: '¿Denegar la donación?', text: `Se notificará a <b>${esc(a?.name)}</b>, quedará registrado el motivo y la solicitud buscará a otro donante.`, ok: 'Denegar donación', ack: 'Estoy consciente de que esta decisión queda registrada en el historial del donante y en la bitácora.', danger: true } : null; },
   dispatch: () => ({ title: '¿Despachar la unidad?', text: `Se asignará un viaje al transportista con destino <b>${esc(get().req?.hospital)}</b>.`, ok: 'Despachar unidad', ack: 'Estoy consciente de que la unidad debe viajar entre 2 y 10 °C.' }),
   receive: () => ({ title: '¿Confirmar la recepción?', text: 'Se cerrará el caso y podrás iniciar la transfusión.', ok: 'Confirmar recepción', ack: 'Confirmo que verifiqué el sello, la integridad de la bolsa y la compatibilidad del paciente.' }),
   saveMedical: () => {
@@ -520,7 +634,7 @@ const CONFIRMS = {
     const done = ['gender', 'age', 'weight', 'risk0', 'risk1', 'risk2'].concat(fd.gender === 'f' ? ['fem'] : []).every((n) => fd[n]);
     return done ? { title: '¿Guardar tus datos médicos?', text: 'Se recalculará tu aptitud para donar con las respuestas actualizadas.', ok: 'Guardar cambios', ack: 'Declaro que los datos son verídicos y entiendo que serán validados por personal médico.' } : null;
   },
-  back: () => (['d/triage', 'd/review', 'd/schedule'].includes(parseHash().path) ? { title: '¿Salir de este proceso?', text: 'Tu avance en este paso se perderá.', ok: 'Salir', cancel: 'Seguir aquí' } : null),
+  back: () => (['d/triage', 'd/review', 'd/schedule'].includes(parseHash().path) ? { title: '¿Salir de este proceso?', text: 'Tu avance en este paso se perderá.', ok: 'Salir', cancel: 'Seguir aquí', danger: true } : null),
   launch: () => {
     if (Object.keys(reqErrors()).length) return null;
     const crit = sel('priority') === 'CRÍTICA', cur = get().req, replacing = cur && !['cancelada', 'programada'].includes(cur.status);
@@ -530,15 +644,17 @@ const CONFIRMS = {
   external: () => ({ title: '¿Enviar a un banco externo?', text: 'La solicitud saldrá de la red local de VitalRed.', ok: 'Enviar solicitud' }),
   authorize: () => { const a = get().appts.find((x) => x.id === (get().selAppt || get().appts[0].id)); return { title: '¿Autorizar el ingreso?', text: `Se registrará el ingreso de <b>${esc(a?.name)}</b> a extracción.`, ok: 'Autorizar ingreso' }; },
   forceAssign: (el) => ({ title: `¿Forzar la asignación de ${esc(el.dataset.id)}?`, text: 'Se omitirá la asignación automática por cercanía y la unidad quedará asignada a la solicitud activa.', ok: 'Forzar asignación', ack: 'Estoy consciente de que esta acción interrumpe la asignación automática del sistema.' }),
-  releaseUnit: (el) => ({ title: `¿Liberar ${esc(el.dataset.id)}?`, text: 'La unidad volverá a estar disponible para nuevas solicitudes.', ok: 'Liberar unidad' }),
+  releaseUnit: (el) => ({ title: `¿Liberar ${esc(el.dataset.id)}?`, text: 'La unidad volverá a estar disponible para nuevas solicitudes.', ok: 'Liberar unidad', danger: true }),
   startCampaign: () => { const g = stockNow().filter(([, , st]) => st === 'CRÍTICO').map(([x]) => x); return { title: '¿Iniciar campaña de alerta?', text: `Se notificará a los donantes de los grupos en escasez: <b>${esc(g.join(', ') || 'O-')}</b>.`, ok: 'Iniciar campaña', ack: 'Estoy consciente de que se enviará una notificación a todos los donantes compatibles.' }; },
   takeTrip: (el) => { const q = (get().tripQueue || []).find((x) => x.id === el.dataset.id); return { title: '¿Tomar este viaje?', text: `Serás responsable del traslado a <b>${esc(q?.dest)}</b> (${esc(q?.content)}).`, ok: 'Tomar viaje', ack: 'Confirmo que puedo realizar el traslado y mantener la bolsa entre 2 y 10 °C.' }; },
-  endCampaign: () => ({ title: '¿Finalizar la campaña?', text: 'Los donantes dejarán de ver la convocatoria.', ok: 'Finalizar campaña' }),
+  endCampaign: () => ({ title: '¿Finalizar la campaña?', text: 'Los donantes dejarán de ver la convocatoria.', ok: 'Finalizar campaña', danger: true }),
   reserveReq: (el) => { const r = RESERVABLE.find((x) => x.id === el.dataset.id); return { title: '¿Aceptar y preparar la solicitud?', text: `Se reservarán <b>${r?.units} unidades ${esc(r?.blood)}</b> del inventario para ${esc(r?.hospital)}.`, ok: 'Reservar unidades' }; },
-  releaseReq: () => ({ title: '¿Liberar la reserva?', text: 'Las unidades volverán al inventario disponible.', ok: 'Liberar reserva' }),
+  releaseReq: () => ({ title: '¿Liberar la reserva?', text: 'Las unidades volverán al inventario disponible.', ok: 'Liberar reserva', danger: true }),
   tripRoute: () => ({ title: '¿Iniciar el traslado?', text: 'Se activará la telemetría de cadena de frío y la ruta hacia el destino.', ok: 'Iniciar traslado', ack: 'Confirmo que la bolsa fue verificada, está sellada y se mantiene entre 2 y 10 °C.' }),
   saveManual: () => (isNaN(parseFloat(val('manualTemp'))) ? null : { title: '¿Guardar la lectura manual?', text: `Se registrará <b>${esc(val('manualTemp'))} °C</b> como temperatura del traslado.`, ok: 'Guardar lectura', ack: 'Confirmo que la temperatura fue medida con un termómetro físico.' }),
   deliver: () => ({ title: '¿Finalizar la entrega?', text: 'Se cerrará el viaje y se generará la bitácora auditada.', ok: 'Finalizar entrega', ack: 'Estoy consciente de que no podré modificar el viaje después de finalizarlo.' }),
+  releaseTrip: () => ({ title: '¿Liberar el viaje a cargo?', text: 'El traslado será cancelado y la unidad biológica regresará de inmediato a la lista de viajes disponibles para que otro transportista pueda tomarlo.', ok: 'Liberar viaje', cancel: 'Conservar viaje', danger: true }),
+  resetDemo: () => ({ title: '¿Reiniciar toda la demostración?', text: 'Esta acción es irreversible y eliminará todos los datos creados en el prototipo (solicitudes, unidades, registros e historial).', ok: 'Reiniciar demo', ack: 'Estoy consciente de que se restablecerán todos los datos a su estado inicial', danger: true, cancel: 'Cancelar' }),
 };
 
 const runClick = (t, e) => {

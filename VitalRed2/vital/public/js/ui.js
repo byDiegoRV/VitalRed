@@ -48,10 +48,38 @@ export const btn = (label, o = {}) => `<button class="btn ${o.v || 'primary'} ${
 export const card = (inner, cls = '') => `<section class="card ${cls}">${inner}</section>`;
 export const badge = (text, color = '') => `<span class="badge ${color}">${text}</span>`;
 export const field = (id, label, type = 'text', ph = '', val = '') => {
-  const input = `<input id="${id}" name="${id}" type="${type}" placeholder="${ph}" value="${val}" autocomplete="off">`;
+  const input = `<input id="${id}" name="${id}" type="${type}" placeholder="${ph}" value="${val}" autocomplete="off" aria-describedby="${id}-err">`;
   const control = type === 'password' ? `<span class="pw">${input}<button type="button" class="eye" data-act="eye" aria-label="Mostrar contraseña" aria-pressed="false">${icon('eye', 18)}</button></span>` : input;
-  return `<label class="field"><span>${label}</span>${control}<small class="err" id="${id}-err"></small></label>`;
+  return `<label class="field"><span>${label}</span>${control}<small class="err" id="${id}-err" role="alert" aria-live="polite"></small></label>`;
 };
+
+export const emptyState = ({
+  iconName = 'clipboard',
+  title = 'No hay elementos registrados',
+  text = 'No se encontraron datos disponibles en este momento.',
+  actionBtn = '',
+  cls = ''
+} = {}) => `
+  <div class="empty-state ${cls}" role="status" aria-live="polite">
+    <div class="empty-icon" aria-hidden="true">${icon(iconName, 44)}</div>
+    <h3 class="empty-title">${esc(title)}</h3>
+    <p class="empty-desc">${esc(text)}</p>
+    ${actionBtn ? `<div class="empty-action">${actionBtn}</div>` : ''}
+  </div>
+`;
+
+export const loadingState = ({
+  text = 'Cargando información...',
+  subtext = 'Por favor espera un momento.',
+  size = 'md',
+  cls = ''
+} = {}) => `
+  <div class="loading-state ${size} ${cls}" role="status" aria-live="polite" aria-busy="true">
+    <div class="spin-ring ${size}" aria-hidden="true"></div>
+    <p class="loading-title">${esc(text)}</p>
+    ${subtext ? `<p class="loading-sub">${esc(subtext)}</p>` : ''}
+  </div>
+`;
 
 export const toggle = (name, options, cur, cls = '') =>
   `<div class="tog ${cls}" role="radiogroup" data-grp="${name}">${options.map(([v, l, sub]) => `<label class="tbtn"><input type="radio" name="${name}" value="${v}" ${String(cur) === String(v) ? 'checked' : ''}><span>${l}${sub ? `<small>${sub}</small>` : ''}</span></label>`).join('')}</div>`;
@@ -72,34 +100,115 @@ export function toast(message, type = 'ok', action) {
   setTimeout(() => el.remove(), action ? 5000 : 3200);
 }
 
-export function confirmModal(title, text, onOk, okLabel = 'Confirmar', opts = {}) {
+export function showConfirmDialog(titleOrOptions, text, onOk, okLabel = 'Confirmar', opts = {}) {
+  let title, message, handleOk, handleCancel, confirmText, cancelText, ack, danger;
+
+  if (typeof titleOrOptions === 'object' && titleOrOptions !== null) {
+    title = titleOrOptions.title || 'Confirmación requerida';
+    message = titleOrOptions.message || titleOrOptions.text || '';
+    handleOk = titleOrOptions.onConfirm || titleOrOptions.onOk || (() => {});
+    handleCancel = titleOrOptions.onCancel || (() => {});
+    confirmText = titleOrOptions.confirmText || titleOrOptions.okLabel || 'Confirmar';
+    cancelText = titleOrOptions.cancelText || titleOrOptions.cancelLabel || 'Volver';
+    ack = titleOrOptions.requireCheckbox || titleOrOptions.ack || null;
+    danger = Boolean(titleOrOptions.danger);
+  } else {
+    title = titleOrOptions;
+    message = text || '';
+    handleOk = onOk || (() => {});
+    handleCancel = opts.onCancel || (() => {});
+    confirmText = okLabel;
+    cancelText = opts.cancel || 'Volver';
+    ack = opts.ack || null;
+    danger = Boolean(opts.danger);
+  }
+
   const prev = document.activeElement;
   const m = document.createElement('div');
   m.className = 'modal';
-  m.setAttribute('role', 'alertdialog'); m.setAttribute('aria-modal', 'true');
-  m.setAttribute('aria-labelledby', 'modalTitle'); m.setAttribute('aria-describedby', 'modalText');
-  const ack = opts.ack ? `<label class="ack"><input type="checkbox" id="modalAck"><span>${opts.ack}</span></label>` : '';
-  m.innerHTML = card(`<h2 id="modalTitle">${title}</h2><p class="mut" id="modalText" style="margin:8px 0 16px">${text}</p>${ack}<div class="row"><button class="btn ghost" data-x>${opts.cancel || 'Volver'}</button><button class="btn primary" data-ok${opts.ack ? ' disabled' : ''}>${okLabel}</button></div>`);
-  const ok = m.querySelector('[data-ok]'), box = m.querySelector('#modalAck');
+  m.setAttribute('role', 'alertdialog');
+  m.setAttribute('aria-modal', 'true');
+  m.setAttribute('aria-labelledby', 'modalTitle');
+  m.setAttribute('aria-describedby', 'modalText');
+
+  const ackHtml = ack ? `<label class="ack"><input type="checkbox" id="modalAck"><span>${ack}</span></label>` : '';
+  const okCls = danger ? 'danger' : 'primary';
+  const badgeHtml = danger ? `<div class="modal-danger-badge" aria-hidden="true">${icon('alert', 14)} Acción Crítica</div>` : '';
+
+  m.innerHTML = card(`
+    ${badgeHtml}
+    <h2 id="modalTitle">${title}</h2>
+    <p class="mut" id="modalText" style="margin:8px 0 16px">${message}</p>
+    ${ackHtml}
+    <div class="row">
+      <button type="button" class="btn ghost" data-x>${cancelText}</button>
+      <button type="button" class="btn ${okCls}" data-ok${ack ? ' disabled' : ''}>${confirmText}</button>
+    </div>
+  `);
+
+  const ok = m.querySelector('[data-ok]');
+  const box = m.querySelector('#modalAck');
+  const cancelBtn = m.querySelector('[data-x]');
+
   const onKey = (e) => {
-    if (e.key === 'Escape') { e.stopPropagation(); close(); return; }
+    if (e.key === 'Escape') {
+      e.stopPropagation();
+      e.preventDefault();
+      close(false);
+      return;
+    }
     if (e.key !== 'Tab') return;
-    const f = [...m.querySelectorAll('input,button:not([disabled])')];
-    if (!f.length) return;
+    const f = [...m.querySelectorAll('input:not([disabled]),button:not([disabled]),[tabindex="0"]:not([disabled])')];
+    if (!f.length) { e.preventDefault(); return; }
     const first = f[0], last = f[f.length - 1];
-    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
-    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+    if (e.shiftKey && document.activeElement === first) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && document.activeElement === last) {
+      e.preventDefault();
+      first.focus();
+    }
   };
-  function close() { document.removeEventListener('keydown', onKey, true); m.remove(); if (prev && prev.isConnected) prev.focus(); }
-  box?.addEventListener('change', () => { ok.disabled = !box.checked; });
+
+  let closed = false;
+  function close(confirmed = false) {
+    if (closed) return;
+    closed = true;
+    document.removeEventListener('keydown', onKey, true);
+    m.remove();
+    if (!confirmed) handleCancel?.();
+    if (prev && prev.isConnected) prev.focus();
+  }
+
+  box?.addEventListener('change', () => {
+    ok.disabled = !box.checked;
+  });
+
   m.onclick = (e) => {
-    if (e.target === m || e.target.dataset.x !== undefined) close();
-    if (e.target.dataset.ok !== undefined && !ok.disabled) { close(); onOk(); }
+    if (e.target === m || e.target.dataset.x !== undefined || e.target.closest('[data-x]')) {
+      close(false);
+    }
+    if (e.target.dataset.ok !== undefined || e.target.closest('[data-ok]')) {
+      if (!ok.disabled) {
+        close(true);
+        handleOk();
+      }
+    }
   };
+
   document.addEventListener('keydown', onKey, true);
   document.body.append(m);
-  (box || m.querySelector('[data-x]')).focus();
+
+  if (box) {
+    box.focus();
+  } else if (danger && cancelBtn) {
+    cancelBtn.focus();
+  } else {
+    (cancelBtn || ok).focus();
+  }
 }
+
+export const confirmModal = showConfirmDialog;
 
 export function notifModal(notifs, onSelect, onMarkAll) {
   const prev = document.activeElement;
@@ -122,7 +231,12 @@ export function notifModal(notifs, onSelect, onMarkAll) {
           ${!n.read ? '<span class="badge red">Nueva</span>' : ''}
         </div>
       </div>`).join('')
-    : `<div class="notif-empty"><div class="big">${icon('bell', 36)}</div><p>No tienes notificaciones pendientes.</p></div>`;
+    : emptyState({
+        iconName: 'bell',
+        title: 'Bandeja limpia',
+        text: 'No tienes notificaciones pendientes en este momento.',
+        cls: 'in-panel'
+      });
 
   m.innerHTML = `
     <div class="card notif-panel">
