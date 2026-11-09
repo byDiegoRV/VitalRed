@@ -25,21 +25,24 @@ const ICONS = {
   plus: '<path d="M12 5v14M5 12h14"/>',
   heart: '<path d="M12 21s-8-5.5-8-11a4.5 4.5 0 0 1 8-2.5A4.5 4.5 0 0 1 20 10c0 5.5-8 11-8 11z"/>',
 };
+
 export const icon = (name, size = 20) => `<svg class="ic" width="${size}" height="${size}" viewBox="0 0 24 24" aria-hidden="true">${ICONS[name] || ''}</svg>`;
-// Navega a una ruta; si ya estás en ella, vuelve a dibujarla (así los cambios de estado se reflejan).
+
 export const go = (route, replace = false) => {
   const target = '#/' + route;
   if (location.hash === target) return dispatchEvent(new Event('hashchange'));
   if (replace) location.replace(target); else location.hash = target;
 };
+
 export const esc = (v) => String(v ?? '').replace(/[<>&"']/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&#39;' }[c]));
-// Descarga un archivo generado en el navegador (CSV, etc.)
+
 export function download(name, content, type = 'text/csv;charset=utf-8') {
   const url = URL.createObjectURL(new Blob(['\ufeff' + content], { type }));
   const a = document.createElement('a');
   a.href = url; a.download = name; document.body.append(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
+
 const attrs = (o) => `${o.go ? `data-go="${o.go}"` : ''} ${o.act ? `data-act="${o.act}"` : ''} ${o.id ? `id="${o.id}"` : ''} ${o.dis ? 'disabled' : ''} ${o.type ? `type="${o.type}"` : ''}`;
 export const btn = (label, o = {}) => `<button class="btn ${o.v || 'primary'} ${o.cls || ''}" ${attrs(o)}>${label}</button>`;
 export const card = (inner, cls = '') => `<section class="card ${cls}">${inner}</section>`;
@@ -49,11 +52,14 @@ export const field = (id, label, type = 'text', ph = '', val = '') => {
   const control = type === 'password' ? `<span class="pw">${input}<button type="button" class="eye" data-act="eye" aria-label="Mostrar contraseña" aria-pressed="false">${icon('eye', 18)}</button></span>` : input;
   return `<label class="field"><span>${label}</span>${control}<small class="err" id="${id}-err"></small></label>`;
 };
+
 export const toggle = (name, options, cur, cls = '') =>
   `<div class="tog ${cls}" role="radiogroup" data-grp="${name}">${options.map(([v, l, sub]) => `<label class="tbtn"><input type="radio" name="${name}" value="${v}" ${String(cur) === String(v) ? 'checked' : ''}><span>${l}${sub ? `<small>${sub}</small>` : ''}</span></label>`).join('')}</div>`;
-export const flow = (n, label) => `<div class="flow"><div class="flowbar">${[1, 2, 3, 4].map((i) => `<i class="${i <= n ? 'on' : ''}"></i>`).join('')}</div><small class="lbl">PASO ${n} DE 4 · ${label}</small></div>`;
+
+export const flow = (n, label) => `<div class="flow"><div class="flowbar">${[1, 2, 3, 4].map((i) => `<i class="${i <= n ? 'on' : ''}"></i>`).join('')}</div><small class="lbl">PASO ${n} DE 4 — ${label}</small></div>`;
 export const stepper = (steps, index) =>
   `<ol class="stepper">${steps.map((s, i) => `<li class="${i < index ? 'done' : i === index ? 'on' : ''}">${s}</li>`).join('')}</ol>`;
+
 export const statusScreen = (glyph, title, text, actions) =>
   card(`<div class="center stack"><div class="big">${glyph}</div><h2>${title}</h2><p class="mut">${text}</p>${actions}</div>`);
 
@@ -65,7 +71,7 @@ export function toast(message, type = 'ok', action) {
   document.getElementById('toasts').append(el);
   setTimeout(() => el.remove(), action ? 5000 : 3200);
 }
-// Confirmación accesible: foco atrapado, Esc cierra y, si se pasa opts.ack, exige marcar la casilla "estoy consciente".
+
 export function confirmModal(title, text, onOk, okLabel = 'Confirmar', opts = {}) {
   const prev = document.activeElement;
   const m = document.createElement('div');
@@ -94,9 +100,79 @@ export function confirmModal(title, text, onOk, okLabel = 'Confirmar', opts = {}
   document.body.append(m);
   (box || m.querySelector('[data-x]')).focus();
 }
-export const qrPattern = (seed) => Array.from({ length: 121 }, (_, i) => `<i class="${((i * 7 + seed.length * (i % 5) + i * i) % 3) ? 'w' : ''}"></i>`).join('');
 
-export const PW_RULES = [['8 o más caracteres', (p) => p.length >= 8], ['Una letra mayúscula', (p) => /[A-Z]/.test(p)], ['Una letra minúscula', (p) => /[a-z]/.test(p)], ['Un número', (p) => /\d/.test(p)], ['Un carácter especial (!@#$%…)', (p) => /[^A-Za-z0-9]/.test(p)]];
+export function notifModal(notifs, onSelect, onMarkAll) {
+  const prev = document.activeElement;
+  const m = document.createElement('div');
+  m.className = 'modal';
+  m.setAttribute('role', 'dialog'); m.setAttribute('aria-modal', 'true');
+  m.setAttribute('aria-labelledby', 'notifTitle');
+
+  const unreadCount = notifs.filter((n) => !n.read).length;
+  const listHtml = notifs.length
+    ? notifs.map((n) => `
+      <div class="notif-card ${n.read ? '' : 'unread'}" data-act="readNotif" data-id="${n.id}" data-go="${n.go || ''}" role="button" tabindex="0">
+        <div class="notif-icon ${n.type || 'alert'}">${icon(n.type || 'alert', 18)}</div>
+        <div class="notif-body">
+          <div class="between">
+            <b>${esc(n.title)}</b>
+            <small>${esc(n.time || 'Reciente')}</small>
+          </div>
+          <p>${esc(n.text)}</p>
+          ${!n.read ? '<span class="badge red">Nueva</span>' : ''}
+        </div>
+      </div>`).join('')
+    : `<div class="notif-empty"><div class="big">${icon('bell', 36)}</div><p>No tienes notificaciones pendientes.</p></div>`;
+
+  m.innerHTML = `
+    <div class="card notif-panel">
+      <div class="between">
+        <div>
+          <h2 id="notifTitle">Notificaciones</h2>
+          <small class="mut">${unreadCount} sin leer</small>
+        </div>
+        <button class="btn ghost sm" data-x aria-label="Cerrar">${icon('x', 18)}</button>
+      </div>
+      <div class="notif-list" role="region" aria-label="Lista de notificaciones">
+        ${listHtml}
+      </div>
+      <div class="row" style="margin-top:8px">
+        ${unreadCount > 0 ? '<button class="btn ghost sm" data-act="markAllNotifs">Marcar todas como leídas</button>' : ''}
+        <button class="btn sm" data-x>Cerrar</button>
+      </div>
+    </div>`;
+
+  const onKey = (e) => {
+    if (e.key === 'Escape') { e.stopPropagation(); close(); }
+    if (e.key !== 'Tab') return;
+    const f = [...m.querySelectorAll('input,button,div[role=button]:not([disabled])')];
+    if (!f.length) return;
+    const first = f[0], last = f[f.length - 1];
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+  };
+  function close() { document.removeEventListener('keydown', onKey, true); m.remove(); if (prev && prev.isConnected) prev.focus(); }
+
+  m.onclick = (e) => {
+    if (e.target === m || e.target.closest('[data-x]')) return close();
+    const markAll = e.target.closest('[data-act="markAllNotifs"]');
+    if (markAll) { onMarkAll?.(); close(); return; }
+    const cardEl = e.target.closest('[data-act="readNotif"]');
+    if (cardEl) {
+      const id = cardEl.dataset.id;
+      const targetGo = cardEl.dataset.go;
+      close();
+      onSelect?.(id, targetGo);
+    }
+  };
+
+  document.addEventListener('keydown', onKey, true);
+  document.body.append(m);
+  m.querySelector('[data-x]').focus();
+}
+
+export const qrPattern = (seed) => Array.from({ length: 121 }, (_, i) => `<i class="${((i * 7 + seed.length * (i % 5) + i * i) % 3) ? 'w' : ''}"></i>`).join('');
+export const PW_RULES = [['8 o más caracteres', (p) => p.length >= 8], ['Una letra mayúscula', (p) => /[A-Z]/.test(p)], ['Una letra minúscula', (p) => /[a-z]/.test(p)], ['Un número', (p) => /\d/.test(p)], ['Un carácter especial (!@#$%)', (p) => /[^A-Za-z0-9]/.test(p)]];
 export const passwordIssues = (p) => PW_RULES.filter(([, ok]) => !ok(p)).map(([label]) => label);
 export const pwRules = () => `<ul class="rules" id="pwRules">${PW_RULES.map(([l]) => `<li>${icon('check', 14)}${l}</li>`).join('')}</ul>`;
 export function bindPwRules(root) {
