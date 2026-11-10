@@ -188,3 +188,45 @@ export const demoTrip = (base) => {
   set({ tripIdx: i + 1, tripSeq: n });
   return { ...base, id: `TR-${n}`, origin: BANK.name, dest: c.hospital, content: `${c.units} u. ${c.component} ${c.blood}`, distance: `${dist.toFixed(1)} km`, eta: `${Math.max(5, Math.round((dist / 30) * 60))} min`, status: 'disponible', priority: c.priority, area: c.area, bed: c.bed, requester: `Servicio de ${c.area}`, publishedAt: Date.now(), demo: true, thermalLogs: [], reqId: null };
 };
+
+export const SHELF_LIFE_DAYS = {
+  'Concentrado eritrocitario': 42,
+  'Concentrado de hematíes': 42,
+  'Sangre total': 35,
+  'Plaquetas por aféresis': 5,
+  'Plaquetas': 5,
+  'Plasma fresco congelado': 365,
+  'Crioprecipitado': 365
+};
+
+export const RECOMMENDED_VOLUMES = {
+  'Concentrado eritrocitario': 300,
+  'Concentrado de hematíes': 300,
+  'Sangre total': 450,
+  'Plaquetas por aféresis': 250,
+  'Plaquetas': 250,
+  'Plasma fresco congelado': 250,
+  'Crioprecipitado': 150
+};
+
+export const CHAMBER_LOCATIONS = [
+  'Cámara Fría 1 (2° a 6°C) — Estante A-1',
+  'Cámara Fría 1 (2° a 6°C) — Estante A-2',
+  'Cámara Fría 1 (2° a 6°C) — Estante A-3',
+  'Cámara Fría 1 (2° a 6°C) — Estante A-4',
+  'Cámara Fría 2 (2° a 6°C) — Estante B-1',
+  'Cámara Fría 2 (2° a 6°C) — Estante B-2',
+  'Cámara Fría 2 (2° a 6°C) — Estante B-3',
+  'Ultracongelador 1 (-30°C) — Gaveta P-1',
+  'Ultracongelador 2 (-30°C) — Gaveta P-2',
+  'Agitador Plaquetario 1 (20° a 24°C) — Bandeja 1',
+  'Agitador Plaquetario 2 (20° a 24°C) — Bandeja 2',
+  'Cámara de Cuarentena (4°C) — Gaveta Q-1'
+];
+
+export const calculateExpirationDate = (component, extractionDate) => {
+  const days = SHELF_LIFE_DAYS[component] || 35;
+  const base = extractionDate ? new Date(extractionDate + 'T00:00:00') : new Date();
+  base.setDate(base.getDate() + days);
+  return base.toISOString().slice(0, 10);
+};

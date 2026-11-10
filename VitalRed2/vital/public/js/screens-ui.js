@@ -1,7 +1,7 @@
-import { get, currentUser, HOME } from './store.js';
-import { btn, card, badge, field, toggle, stepper, qrPattern, icon, statusScreen, esc } from './ui.js';
+import { get, set, currentUser, HOME, getInventory, checkExpirations, getUnitExpirationInfo, addInventoryItem, updateInventoryItem, removeInventoryItem } from './store.js';
+import { btn, card, badge, field, toggle, stepper, qrPattern, icon, statusScreen, esc, confirmModal, toast, emptyState, loadingState } from './ui.js';
 import { fleetUnits, fleetMount, BANK } from './maps.js';
-import { activeReq, historyOf, fmtDate, nextEligible, compatible, shortName, statusOf, deferred, reasonLabel, REASONS, CHECKS, reviewsAll, eligibleDonors, hhmm, ago, seedAt, fmtDateTime } from './domain.js';
+import { activeReq, historyOf, fmtDate, nextEligible, compatible, shortName, statusOf, deferred, reasonLabel, REASONS, CHECKS, reviewsAll, eligibleDonors, hhmm, ago, seedAt, fmtDateTime, SHELF_LIFE_DAYS, RECOMMENDED_VOLUMES, CHAMBER_LOCATIONS, calculateExpirationDate } from './domain.js';
 import { donorStage, STAGE_HOME } from './flow.js';
 
 const chip = (b, cls = '') => `<span class="chip ${cls}">${b}</span>`;
@@ -39,7 +39,8 @@ export const RESERVABLE = [{ id: 'SR-4821', hospital: 'Hospital San Rafael', blo
 export const stockNow = () => {
   const held = get().reserved || [];
   return STOCK.map(([g, n]) => {
-    const m = Math.max(0, n - RESERVABLE.filter((r) => held.includes(r.id) && r.blood === g).reduce((a, r) => a + r.units, 0));
+    const userAdded = (get().inventory || []).filter((u) => u.isUserAdded && u.blood === g && getUnitExpirationInfo(u).dispatchable).length;
+    const m = Math.max(0, n + userAdded - RESERVABLE.filter((r) => held.includes(r.id) && r.blood === g).reduce((a, r) => a + r.units, 0));
     return [g, m, m < 6 ? 'CRÍTICO' : m < 20 ? 'BAJO' : 'ÓPTIMO'];
   });
 };
@@ -50,6 +51,390 @@ const REPORT_ROWS = [['#B-91024', 'O+', '12 Ene 2026', 'Hosp. San Rafael', 'Dr. 
 export const reportCsv = () => [REPORT_HEAD, ...REPORT_ROWS].map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\r\n');
 export const reportDoc = () => `<article class="doc"><header class="doc-head"><div class="logo"><i>${icon('drop', 18)}</i>VitalRed</div><div class="right"><small class="lbl">REPORTE DE TRAZABILIDAD</small><br><b>${new Date().toLocaleDateString('es-MX', { dateStyle: 'long' })}</b></div></header><div class="doc-title"><div><h1>Historial de Trazabilidad</h1><p class="mut">Registros de unidades procesadas según NOM-253-SSA1-2012.</p></div></div><div class="tbl"><table><thead><tr>${REPORT_HEAD.map((h) => `<th>${h}</th>`).join('')}</tr></thead><tbody>${REPORT_ROWS.map((r) => `<tr>${r.map((c) => `<td>${esc(c)}</td>`).join('')}</tr>`).join('')}</tbody></table></div><p class="cert">Documento generado por VitalRed — Banco de Sangre Central.</p></article>`;
 const table = (head, rows, cls = '') => `<div class="tbl ${cls}" tabindex="0" role="region" aria-label="Tabla de datos"><table><thead><tr>${head.map((h) => `<th>${h}</th>`).join('')}</tr></thead><tbody>${rows.join('')}</tbody></table></div>`;
+
+export const renderInventoryTable = (items) => {
+  if (!items || items.length === 0) {
+    return emptyState({
+      iconName: 'drop',
+      title: 'No se encontraron unidades',
+      text: 'No hay bolsas registradas que coincidan con los filtros o el término de búsqueda actual.',
+      actionBtn: btn('Restablecer filtros', { act: 'resetInvFilters', v: 'ghost sm' })
+    });
+  }
+  return table(
+    ['Código / Folio', 'Grupo', 'Hemocomponente', 'Volumen', 'Cámara Frigorífica', 'Extracción', 'Caducidad', 'Estado', 'Acción'],
+    items.map((u) => {
+      const info = getUnitExpirationInfo(u);
+      return `<tr>
+        <td><span class="redtxt"><b>${esc(u.id)}</b></span></td>
+        <td>${chip(u.blood, u.blood.includes('-') ? 'red' : '')}</td>
+        <td><span style="font-weight:600">${esc(u.component)}</span></td>
+        <td>${u.volume} mL</td>
+        <td><small class="mut">${esc(u.location)}</small></td>
+        <td><small class="mut">${esc(u.extractedAt)}</small></td>
+        <td><b>${esc(u.expiresAt)}</b> <small class="mut">(${info.daysLeft >= 0 ? `${info.daysLeft} d` : `hace ${Math.abs(info.daysLeft)} d`})</small></td>
+        <td><span class="badge ${info.badgeCls}">${info.label}</span></td>
+        <td><button class="btn ghost sm" data-act="viewBagDetail" data-id="${esc(u.id)}" aria-label="Ver detalle de ${esc(u.id)}">Detalles</button></td>
+      </tr>`;
+    }),
+    'h4 h5 h6'
+  );
+};
+
+export function openNewBagModal(onSave) {
+  const prev = document.activeElement;
+  const m = document.createElement('div');
+  m.className = 'modal';
+  m.setAttribute('role', 'dialog');
+  m.setAttribute('aria-modal', 'true');
+  m.setAttribute('aria-labelledby', 'modalNewBagTitle');
+
+  const nextSeq = (get().invSeq || 91040) + 1;
+  const defaultFolio = `VR-B-${nextSeq}`;
+  const today = new Date().toISOString().slice(0, 10);
+  const defaultComponent = 'Concentrado eritrocitario';
+  const defaultDays = 42;
+  const defaultVolume = 300;
+  const defaultExpires = calculateExpirationDate(defaultComponent, today);
+
+  m.innerHTML = `
+    <div class="card modal-inv" style="max-width:540px;width:100%;max-height:92vh;overflow-y:auto;padding:22px">
+      <div class="between" style="margin-bottom:14px">
+        <div>
+          <h2 id="modalNewBagTitle" style="font-size:19px">Alta de Unidad de Sangre</h2>
+          <small class="mut">Ingreso y trazabilidad biológica (NOM-253-SSA1-2012)</small>
+        </div>
+        <button class="btn ghost sm" data-x aria-label="Cerrar modal">${icon('x', 18)}</button>
+      </div>
+
+      <form id="formNewBag" class="stack" novalidate>
+        <div class="row">
+          <label class="field" style="flex:1">
+            <span>Código / Folio de Bolsa *</span>
+            <input id="bagFolio" name="bagFolio" type="text" value="${defaultFolio}" required autocomplete="off">
+            <small class="err" id="bagFolio-err"></small>
+          </label>
+          <label class="field" style="flex:1">
+            <span>Grupo y Factor Rh *</span>
+            <select id="bagBlood" name="bagBlood" required>
+              ${['O+', 'O-', 'A+', 'A-', 'B+', 'B-', 'AB+', 'AB-'].map((b) => `<option value="${b}">${b}</option>`).join('')}
+            </select>
+          </label>
+        </div>
+
+        <div class="row">
+          <label class="field" style="flex:1.4">
+            <span>Hemocomponente *</span>
+            <select id="bagComponent" name="bagComponent" required>
+              <option value="Concentrado eritrocitario" selected>Concentrado eritrocitario (42 días)</option>
+              <option value="Sangre total">Sangre total (35 días)</option>
+              <option value="Plaquetas por aféresis">Plaquetas por aféresis (5 días)</option>
+              <option value="Plasma fresco congelado">Plasma fresco congelado (365 días)</option>
+            </select>
+          </label>
+          <label class="field" style="flex:1">
+            <span>Volumen (mL) *</span>
+            <input id="bagVolume" name="bagVolume" type="number" min="50" max="600" value="${defaultVolume}" required>
+            <small class="err" id="bagVolume-err"></small>
+          </label>
+        </div>
+
+        <div class="row">
+          <label class="field" style="flex:1">
+            <span>Fecha de Extracción *</span>
+            <input id="bagExtracted" name="bagExtracted" type="date" value="${today}" max="${today}" required>
+            <small class="err" id="bagExtracted-err"></small>
+          </label>
+          <label class="field" style="flex:1">
+            <span>Fecha de Caducidad *</span>
+            <input id="bagExpires" name="bagExpires" type="date" value="${defaultExpires}" required>
+            <small class="err" id="bagExpires-err"></small>
+          </label>
+        </div>
+
+        <div class="banner info" id="bagExpiryBanner" style="margin:4px 0 6px;font-size:12px;display:flex;align-items:center;gap:8px">
+          ${icon('calendar', 16)}
+          <span><b>Cálculo NOM-253:</b> <span id="shelfDaysText">${defaultDays}</span> días de vida útil. Caduca el <b id="calcExpiryText">${fmtDate(defaultExpires)}</b>.</span>
+        </div>
+
+        <label class="field">
+          <span>Cámara / Ubicación Frigorífica Asignada *</span>
+          <select id="bagLocation" name="bagLocation" required>
+            ${CHAMBER_LOCATIONS.map((loc) => `<option value="${loc}">${loc}</option>`).join('')}
+          </select>
+        </label>
+
+        <label class="field">
+          <span>Donante / Folio de Cita (Opcional)</span>
+          <input id="bagDonor" name="bagDonor" type="text" placeholder="Ej. Carlos Mendoza R. (FOL-9830)" autocomplete="off">
+        </label>
+
+        <label class="field">
+          <span>Notas y Pruebas Serológicas (Opcional)</span>
+          <textarea id="bagNotes" rows="2" placeholder="Pruebas infecciosas no reactivas, inspección visual conforme..."></textarea>
+        </label>
+
+        <div class="row" style="margin-top:12px">
+          <button type="button" class="btn ghost" data-x>Cancelar</button>
+          <button type="submit" class="btn primary" id="btnSubmitBag">Guardar en Inventario</button>
+        </div>
+      </form>
+    </div>
+  `;
+
+  function close() {
+    document.removeEventListener('keydown', onKey, true);
+    m.remove();
+    if (prev && prev.isConnected) prev.focus();
+  }
+
+  const onKey = (e) => {
+    if (e.key === 'Escape') { e.stopPropagation(); close(); return; }
+    if (e.key !== 'Tab') return;
+    const f = [...m.querySelectorAll('input,button,select,textarea:not([disabled])')];
+    if (!f.length) return;
+    const first = f[0], last = f[f.length - 1];
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+  };
+
+  const compSelect = m.querySelector('#bagComponent');
+  const extInput = m.querySelector('#bagExtracted');
+  const expInput = m.querySelector('#bagExpires');
+  const volInput = m.querySelector('#bagVolume');
+  const locSelect = m.querySelector('#bagLocation');
+  const bannerText = m.querySelector('#shelfDaysText');
+  const calcText = m.querySelector('#calcExpiryText');
+
+  const recalculate = () => {
+    const comp = compSelect.value;
+    const ext = extInput.value || today;
+    const days = SHELF_LIFE_DAYS[comp] || 35;
+    const newExp = calculateExpirationDate(comp, ext);
+    expInput.value = newExp;
+    bannerText.textContent = days;
+    calcText.textContent = fmtDate(newExp);
+    if (RECOMMENDED_VOLUMES[comp]) {
+      volInput.value = RECOMMENDED_VOLUMES[comp];
+    }
+    if (comp.includes('plaqueta')) {
+      locSelect.value = 'Agitador Plaquetario 1 (20° a 24°C) — Bandeja 1';
+    } else if (comp.includes('Plasma')) {
+      locSelect.value = 'Ultracongelador 1 (-30°C) — Gaveta P-1';
+    } else if (!locSelect.value.includes('Cámara Fría')) {
+      locSelect.value = 'Cámara Fría 1 (2° a 6°C) — Estante A-1';
+    }
+  };
+
+  compSelect.addEventListener('change', recalculate);
+  extInput.addEventListener('change', recalculate);
+
+  const form = m.querySelector('#formNewBag');
+  form.addEventListener('submit', (e) => {
+    e.preventDefault();
+    m.querySelectorAll('.err').forEach((el) => { el.textContent = ''; });
+    m.querySelectorAll('input.bad').forEach((el) => el.classList.remove('bad'));
+
+    const folio = m.querySelector('#bagFolio').value.trim();
+    const blood = m.querySelector('#bagBlood').value;
+    const component = m.querySelector('#bagComponent').value;
+    const volume = Number(m.querySelector('#bagVolume').value);
+    const extractedAt = m.querySelector('#bagExtracted').value;
+    const expiresAt = m.querySelector('#bagExpires').value;
+    const location = m.querySelector('#bagLocation').value;
+    const donorName = m.querySelector('#bagDonor').value.trim();
+    const notes = m.querySelector('#bagNotes').value.trim();
+
+    let hasError = false;
+    if (!folio) {
+      m.querySelector('#bagFolio').classList.add('bad');
+      m.querySelector('#bagFolio-err').textContent = 'El folio es obligatorio';
+      hasError = true;
+    } else if ((get().inventory || []).some((u) => u.id.toLowerCase() === folio.toLowerCase())) {
+      m.querySelector('#bagFolio').classList.add('bad');
+      m.querySelector('#bagFolio-err').textContent = 'Ya existe una bolsa con este folio';
+      hasError = true;
+    }
+
+    if (!volume || volume < 50 || volume > 600) {
+      m.querySelector('#bagVolume').classList.add('bad');
+      m.querySelector('#bagVolume-err').textContent = 'Volumen debe ser entre 50 y 600 mL';
+      hasError = true;
+    }
+
+    if (!extractedAt) {
+      m.querySelector('#bagExtracted').classList.add('bad');
+      m.querySelector('#bagExtracted-err').textContent = 'Fecha de extracción obligatoria';
+      hasError = true;
+    }
+
+    if (!expiresAt) {
+      m.querySelector('#bagExpires').classList.add('bad');
+      m.querySelector('#bagExpires-err').textContent = 'Fecha de caducidad obligatoria';
+      hasError = true;
+    }
+
+    if (hasError) return;
+
+    addInventoryItem({
+      id: folio,
+      blood,
+      component,
+      volume,
+      extractedAt,
+      expiresAt,
+      location,
+      donorName,
+      notes
+    });
+
+    close();
+    toast(`Unidad ${folio} (${blood} ${component}) registrada con éxito`, 'ok');
+    onSave?.();
+  });
+
+  m.onclick = (e) => {
+    if (e.target === m || e.target.closest('[data-x]')) close();
+  };
+
+  document.addEventListener('keydown', onKey, true);
+  document.body.append(m);
+  m.querySelector('#bagFolio').focus();
+}
+
+export function openUnitDetailModal(unit, onUpdate) {
+  if (!unit) return;
+  const prev = document.activeElement;
+  const m = document.createElement('div');
+  m.className = 'modal';
+  m.setAttribute('role', 'dialog');
+  m.setAttribute('aria-modal', 'true');
+  m.setAttribute('aria-labelledby', 'modalDetailTitle');
+
+  const info = getUnitExpirationInfo(unit);
+  const row = (k, v) => `<div class="item"><span class="mut">${k}</span><b>${v}</b></div>`;
+
+  const advisory = {
+    vigente: 'Unidad óptima apta para pruebas de compatibilidad cruzada y despacho inmediato.',
+    por_vencer: 'Unidad en ventana crítica próxima a vencer. Priorizar asignación en la siguiente solicitud compatible.',
+    caducado: 'Unidad expirada según NOM-253. Bloqueada para transfusión. Proceder a baja y descarte RPBI (NOM-087).',
+    cuarentena: 'Unidad retenida en cámara de cuarentena bajo investigación serológica o de calidad.'
+  }[info.status] || 'Unidad registrada en el banco.';
+
+  m.innerHTML = `
+    <div class="card modal-inv" style="max-width:500px;width:100%;max-height:90vh;overflow-y:auto;padding:22px">
+      <div class="between" style="margin-bottom:12px">
+        <div>
+          <h2 id="modalDetailTitle" style="font-size:18px">Trazabilidad de la Unidad</h2>
+          <small class="mut">Folio: <b class="redtxt">${esc(unit.id)}</b></small>
+        </div>
+        <button class="btn ghost sm" data-x aria-label="Cerrar modal">${icon('x', 18)}</button>
+      </div>
+
+      <div class="center stack" style="margin-bottom:12px">
+        <div class="qr sm">${qrPattern(unit.id)}</div>
+        <div class="row" style="justify-content:center;gap:8px">
+          ${chip(unit.blood, unit.blood.includes('-') ? 'red' : '')}
+          <span class="badge ${info.badgeCls}">${info.label}</span>
+        </div>
+      </div>
+
+      <div class="stack" style="margin-bottom:14px">
+        ${row('Hemocomponente', esc(unit.component))}
+        ${row('Volumen', `${unit.volume} mL`)}
+        ${row('Ubicación Frigorífica', esc(unit.location))}
+        ${row('Fecha de Extracción', fmtDate(unit.extractedAt))}
+        ${row('Fecha de Caducidad', `${fmtDate(unit.expiresAt)} (${info.daysLeft >= 0 ? `${info.daysLeft} días restantes` : `expiró hace ${Math.abs(info.daysLeft)} días`})`)}
+        ${unit.donorName ? row('Donante / Origen', esc(unit.donorName)) : ''}
+      </div>
+
+      <div class="banner ${info.status === 'vigente' ? 'ok' : info.status === 'por_vencer' ? 'warn' : 'info'}" style="font-size:12px;margin-bottom:14px">
+        <b>Dictamen NOM-253:</b>
+        <p style="margin-top:2px">${advisory}</p>
+      </div>
+
+      ${unit.notes ? `<div class="banner info" style="font-size:12px;margin-bottom:14px"><b>Notas de Laboratorio:</b><p style="margin-top:2px">${esc(unit.notes)}</p></div>` : ''}
+
+      <div class="stack">
+        ${unit.status !== 'cuarentena' && info.status !== 'caducado'
+          ? `<button class="btn warn sm" data-detail-act="quarantine">Mover a Cuarentena</button>`
+          : unit.status === 'cuarentena'
+            ? `<button class="btn ok sm" data-detail-act="unquarantine">Liberar de Cuarentena</button>`
+            : ''
+        }
+        ${(info.status === 'caducado' || unit.status === 'cuarentena')
+          ? `<button class="btn red sm" data-detail-act="discard">Descartar Unidad (Protocolo RPBI)</button>`
+          : ''
+        }
+        <button class="btn ghost sm" data-x>Cerrar</button>
+      </div>
+    </div>
+  `;
+
+  function close() {
+    document.removeEventListener('keydown', onKey, true);
+    m.remove();
+    if (prev && prev.isConnected) prev.focus();
+  }
+
+  const onKey = (e) => {
+    if (e.key === 'Escape') { e.stopPropagation(); close(); return; }
+    if (e.key !== 'Tab') return;
+    const f = [...m.querySelectorAll('input,button:not([disabled])')];
+    if (!f.length) return;
+    const first = f[0], last = f[f.length - 1];
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+  };
+
+  m.onclick = (e) => {
+    if (e.target === m || e.target.closest('[data-x]')) return close();
+    const actBtn = e.target.closest('[data-detail-act]');
+    if (!actBtn) return;
+    const act = actBtn.dataset.detailAct;
+    if (act === 'quarantine') {
+      confirmModal(
+        '¿Poner unidad en cuarentena?',
+        `La bolsa <b>${esc(unit.id)}</b> (${esc(unit.blood)} · ${esc(unit.component)}) será trasladada a la Cámara de Cuarentena (4°C) y quedará bloqueada para despacho transfusional conforme a NOM-253.`,
+        () => {
+          updateInventoryItem(unit.id, { status: 'cuarentena', location: 'Cámara de Cuarentena (4°C) — Gaveta Q-1' });
+          close();
+          toast(`Unidad ${unit.id} puesta en cuarentena preventiva`, 'warn');
+          onUpdate?.();
+        },
+        'Poner en cuarentena',
+        { ack: 'Confirmo el aislamiento preventivo y bloqueo de salida de esta unidad biológica.', danger: true, cancel: 'Volver' }
+      );
+    } else if (act === 'unquarantine') {
+      const defaultLoc = unit.component.includes('plaqueta')
+        ? 'Agitador Plaquetario 1 (20° a 24°C) — Bandeja 1'
+        : unit.component.includes('Plasma')
+          ? 'Ultracongelador 1 (-30°C) — Gaveta P-1'
+          : 'Cámara Fría 1 (2° a 6°C) — Estante A-1';
+      updateInventoryItem(unit.id, { status: 'vigente', location: defaultLoc });
+      close();
+      toast(`Unidad ${unit.id} liberada y reincorporada al stock`, 'ok');
+      onUpdate?.();
+    } else if (act === 'discard') {
+      confirmModal(
+        '¿Descartar unidad biológica?',
+        `Se retirará del inventario la bolsa <b>${esc(unit.id)}</b> para su disposición final RPBI conforme a NOM-087-ECOL-SSA1-2002. Esta acción es irreversible.`,
+        () => {
+          removeInventoryItem(unit.id);
+          close();
+          toast(`Unidad ${unit.id} dada de baja y descartada`, 'err');
+          onUpdate?.();
+        },
+        'Confirmar descarte',
+        { ack: 'Confirmo que la unidad no es apta para transfusión y fue dada de baja del banco.', danger: true, cancel: 'Volver' }
+      );
+    }
+  };
+
+  document.addEventListener('keydown', onKey, true);
+  document.body.append(m);
+  m.querySelector('[data-x]').focus();
+}
 
 export const overrides = {
   // PANTALLA DE LOGIN CON EL DISEÑO ORIGINAL CENTRADO
@@ -317,9 +702,18 @@ export const overrides = {
     role: 'bank', wide: true,
     render: () => {
       const f = get().recFilter || 'all', all = reviewsAll(), ok = all.filter((r) => r.decision === 'apta').length, no = all.length - ok;
-      const rows = all.filter((r) => f === 'all' || (f === 'ok' ? r.decision === 'apta' : r.decision === 'no_apta'));
+      const rows = all.filter((r) => f === 'all' || (f === 'ok' ? r.decision === 'apta' : f === 'no' ? r.decision === 'no_apta' : false));
       const kpis = [['Autorizadas', ok, 'APTAS', 'ok'], ['No autorizadas', no, 'DENEGADAS', 'red'], ['Total de evaluaciones', all.length, 'Historial', '']];
-      return `<h1>Autorizaciones</h1><p class="mut" style="margin-bottom:16px">Todas las donaciones aprobadas y denegadas por el banco de sangre.</p><div class="grid kpi">${kpis.map(([l, n, b, c]) => card(`<small class="mut">${l}</small><h2 class="kpi-n">${n}</h2>${badge(b, c)}`)).join('')}</div>${card(`<div class="between"><h3>Registros</h3><div class="seg">${[['all', 'Todas'], ['ok', 'Autorizadas'], ['no', 'No autorizadas']].map(([v, l]) => `<button class="${f === v ? 'on' : ''}" data-act="filterRec" data-v="${v}">${l}</button>`).join('')}</div></div>${rows.length ? table(['Fecha y hora', 'Donante', 'Grupo', 'Decisión', 'Motivo', ''], rows.map((r) => `<tr><td>${esc(fmtDateTime(r.at))}</td><td>${esc(r.name)}</td><td class="redtxt"><b>${esc(r.blood || '')}</b></td><td>${badge(r.decision === 'apta' ? 'AUTORIZADA' : 'NO AUTORIZADA', r.decision === 'apta' ? 'ok' : 'red')}</td><td>${r.decision === 'apta' ? '<span class="mut">Controles aprobados</span>' : esc(reasonLabel(r.reasons[0])) + (r.reasons.length > 1 ? ` +${r.reasons.length - 1}` : '')}</td><td>${btn('Ver con detalle', { go: `b/record?id=${r.id}`, v: 'ghost', cls: 'sm' })}</td></tr>`), 'h1 h3 h5') : '<p class="mut" style="margin-top:12px">No hay registros en este filtro.</p>'}`, 'full')}`;
+      const recordsContent = rows.length
+        ? table(['Fecha y hora', 'Donante', 'Grupo', 'Decisión', 'Motivo', ''], rows.map((r) => `<tr><td>${esc(fmtDateTime(r.at))}</td><td>${esc(r.name)}</td><td class="redtxt"><b>${esc(r.blood || '')}</b></td><td>${badge(r.decision === 'apta' ? 'AUTORIZADA' : 'NO AUTORIZADA', r.decision === 'apta' ? 'ok' : 'red')}</td><td>${r.decision === 'apta' ? '<span class="mut">Controles aprobados</span>' : esc(reasonLabel(r.reasons[0])) + (r.reasons.length > 1 ? ` +${r.reasons.length - 1}` : '')}</td><td>${btn('Ver con detalle', { go: `b/record?id=${r.id}`, v: 'ghost', cls: 'sm' })}</td></tr>`), 'h1 h3 h5')
+        : emptyState({
+            iconName: 'clipboard',
+            title: 'No hay autorizaciones registradas',
+            text: f === 'all' ? 'Aún no se han completado evaluaciones de donantes en el banco.' : `No hay registros con la decisión seleccionada (${f === 'ok' ? 'Autorizadas' : 'No autorizadas'}).`,
+            actionBtn: f !== 'all' ? btn('Ver todas las autorizaciones', { act: 'filterRec', v: 'ghost sm' }).replace('data-act="filterRec"', 'data-act="filterRec" data-v="all"') : '',
+            cls: 'in-panel'
+          });
+      return `<h1>Autorizaciones</h1><p class="mut" style="margin-bottom:16px">Todas las donaciones aprobadas y denegadas por el banco de sangre.</p><div class="grid kpi">${kpis.map(([l, n, b, c]) => card(`<small class="mut">${l}</small><h2 class="kpi-n">${n}</h2>${badge(b, c)}`)).join('')}</div>${card(`<div class="between"><h3>Registros</h3><div class="seg">${[['all', 'Todas'], ['ok', 'Autorizadas'], ['no', 'No autorizadas']].map(([v, l]) => `<button class="${f === v ? 'on' : ''}" data-act="filterRec" data-v="${v}">${l}</button>`).join('')}</div></div>${recordsContent}`, 'full')}`;
     },
   },
 
@@ -383,7 +777,15 @@ export const overrides = {
       const f = get().filter || 'all', all = reqList(), rows = all.filter((x) => f === 'all' || x.priority === 'CRÍTICA');
       const live = all.filter((x) => x.priority !== 'CANCELADA'), crit = live.filter((x) => x.priority === 'CRÍTICA').length, units = live.reduce((n, x) => n + (x.units || 0), 0);
       const kpis = [['Solicitudes activas', live.length, 'En curso', 'warn'], ['Críticas', crit, 'CÓDIGO ROJO', 'red'], ['Unidades solicitadas', units, 'Hemocomponentes', ''], ['Banco de sangre', 'En línea', `a las ${hhmm(Date.now())}`, 'ok']];
-      return `<div class="band"><small>BANCO DE SANGRE • TURNO ACTIVO</small><h1>Guardia - Urgencias/Quirófano</h1><div class="between"><small>${date()} • Actualizado a las ${hhmm(Date.now())}</small><span class="badge ok">• SISTEMA EN LÍNEA</span></div></div><div class="grid kpi" style="margin:16px 0 0">${kpis.map(([l, n, b, c]) => card(`<small class="mut">${l}</small><h2 class="kpi-n">${n}</h2>${badge(b, c)}`)).join('')}</div><div class="between" style="margin:16px 0"><h2>Solicitudes activas <span class="chip dark">${rows.length}</span></h2><div class="seg"><button class="${f === 'all' ? 'on' : ''}" data-act="filter" data-v="all">Todas</button><button class="${f === 'crit' ? 'on' : ''}" data-act="filter" data-v="crit">Críticas • ${crit}</button></div></div><div class="reqs">${rows.map((x) => `<div class="card req ${x.priority === 'CANCELADA' ? 'dim' : ''}"><div class="between"><div class="row" style="flex:none;gap:12px">${chip(x.blood, x.priority === 'CRÍTICA' ? 'red' : '')}<div><b>${esc(shortName(x.patient))} • ${esc(x.hc)}</b><br><small class="mut">${esc(x.bed)}</small></div></div>${badge(x.label, x.color)}</div><hr><div class="between"><div><small class="lbl">HEMOCOMPONENTE</small><br>${esc(x.component)} • ${x.units} unidad${x.units > 1 ? 'es' : ''}</div><div><small class="lbl">PRIORIDAD</small><br><b class="${x.priority === 'CRÍTICA' ? 'redtxt' : ''}">${x.priority}</b></div><div class="right"><small class="lbl">${esc(x.id)}</small><br>${x.scheduled ? `Hoy • ${hhmm(x.at)}` : ago(x.at)}</div></div><div style="margin-top:12px">${btn('Ver detalle completo', { go: `m/detail?id=${x.id}`, v: 'ghost', cls: 'sm' })}</div></div>`).join('')}</div><button class="fab" data-go="m/new">Nueva Solicitud Urgente</button>`;
+      const reqsHtml = rows.length
+        ? rows.map((x) => `<div class="card req ${x.priority === 'CANCELADA' ? 'dim' : ''}"><div class="between"><div class="row" style="flex:none;gap:12px">${chip(x.blood, x.priority === 'CRÍTICA' ? 'red' : '')}<div><b>${esc(shortName(x.patient))} • ${esc(x.hc)}</b><br><small class="mut">${esc(x.bed)}</small></div></div>${badge(x.label, x.color)}</div><hr><div class="between"><div><small class="lbl">HEMOCOMPONENTE</small><br>${esc(x.component)} • ${x.units} unidad${x.units > 1 ? 'es' : ''}</div><div><small class="lbl">PRIORIDAD</small><br><b class="${x.priority === 'CRÍTICA' ? 'redtxt' : ''}">${x.priority}</b></div><div class="right"><small class="lbl">${esc(x.id)}</small><br>${x.scheduled ? `Hoy • ${hhmm(x.at)}` : ago(x.at)}</div></div><div style="margin-top:12px">${btn('Ver detalle completo', { go: `m/detail?id=${x.id}`, v: 'ghost', cls: 'sm' })}</div></div>`).join('')
+        : emptyState({
+            iconName: 'clipboard',
+            title: f === 'crit' ? 'Sin solicitudes críticas activas' : 'Sin solicitudes activas en la guardia',
+            text: f === 'crit' ? 'No se registran solicitudes transfusionales Código Rojo en este turno.' : 'No hay solicitudes transfusionales pendientes en Urgencias o Quirófano.',
+            actionBtn: f === 'crit' ? btn('Ver todas las solicitudes', { act: 'filter', v: 'ghost sm' }).replace('data-act="filter"', 'data-act="filter" data-v="all"') : btn('Crear nueva solicitud', { go: 'm/new', cls: 'sm' })
+          });
+      return `<div class="band"><small>BANCO DE SANGRE • TURNO ACTIVO</small><h1>Guardia - Urgencias/Quirófano</h1><div class="between"><small>${date()} • Actualizado a las ${hhmm(Date.now())}</small><span class="badge ok">• SISTEMA EN LÍNEA</span></div></div><div class="grid kpi" style="margin:16px 0 0">${kpis.map(([l, n, b, c]) => card(`<small class="mut">${l}</small><h2 class="kpi-n">${n}</h2>${badge(b, c)}`)).join('')}</div><div class="between" style="margin:16px 0"><h2>Solicitudes activas <span class="chip dark">${rows.length}</span></h2><div class="seg"><button class="${f === 'all' ? 'on' : ''}" data-act="filter" data-v="all">Todas</button><button class="${f === 'crit' ? 'on' : ''}" data-act="filter" data-v="crit">Críticas • ${crit}</button></div></div><div class="reqs">${reqsHtml}</div><button class="fab" data-go="m/new">Nueva Solicitud Urgente</button>`;
     },
   },
 
@@ -395,17 +797,118 @@ export const overrides = {
 
   'b/dash': {
     role: 'bank', wide: true,
-    render: () => `<div class="between"><div><h1>Banco de Sangre Central</h1><p class="mut">Panel de Control e Inventario de Cámaras Frigoríficas</p></div><small class="mut">${date()}</small></div><div class="grid kpi" style="margin:16px 0">${[['Unidades totales', 342, '▲ +12 hoy', 'ok'], ['Solicitudes pendientes', 5, 'En espera', 'warn'], ['Alertas críticas', stockNow().filter(([, , st]) => st === 'CRÍTICO').length, 'CRÍTICO', 'red'], ['Donaciones hoy', get().appts.filter((a) => a.state === 'Completada').length + 16, 'Meta: 25', '']].map(([l, n, b, c]) => card(`<small class="mut">${l}</small><h1>${n}</h1>${badge(b, c)}`)).join('')}</div><div class="split"><div>${card(`<div class="between"><div><h3>Matriz de Stock — Cámaras Frigoríficas</h3><small class="mut">Monitor de temperatura y reservas por grupo</small></div>${badge('• Tiempo real', 'ok')}</div>${table(['Grupo', 'Bolsas disponibles', 'Estado', 'Actualización'], stockNow().map(([g, n, s], i) => `<tr><td>${chip(g, s === 'CRÍTICO' ? 'red' : '')}</td><td><b>${n} bolsas</b></td><td>${badge(s, level[s])}</td><td class="mut">${ago(seedAt() - (i + 1) * 3600000)}</td></tr>`))}`)}${card(`<div class="between"><div><h3>Lanzar Convocatoria a Donantes</h3><small class="mut">${get().campaign ? `Campaña activa • ${get().campaign.blood.join(', ')} • ${get().campaign.notified} donantes notificados` : 'Alerta push a donantes del grupo en escasez'}</small></div>${get().campaign ? '<button class="btn ghost sm" data-act="endCampaign">Finalizar campaña</button>' : '<button class="btn sm" data-act="startCampaign">Iniciar Campaña de Alerta</button>'}</div>`)}</div><div>${card(`<h3>Solicitudes Entrantes</h3><div class="stack" style="margin-top:10px">${(() => { const r = get().req; if (!r || ['cancelada', 'cerrada'].includes(r.status)) return ''; const lab = { buscando: [r.lastDenied ? 'BUSCANDO OTRO DONANTE' : 'BUSCANDO', 'red'], esperando: ['DONANTE ACEPTÓ', 'warn'], programada: ['CITA PROGRAMADA', 'warn'], completada: ['DONACIÓN COMPLETA', 'ok'] }[r.status] || ['EN CURSO', '']; return `<div class="inc"><span class="badge ${lab[1]}">${lab[0]}</span><b>${esc(r.hospital)} • ${esc(r.id)}</b><small>${r.units} u. ${esc(r.blood)} • ${esc(r.component)} • ${esc(r.area)}</small>${r.donor ? `<small class="mut">Donante: ${esc(shortName(r.donor.name))}${r.appt ? ' • cita ' + esc(r.appt.time) : ''}</small>` : ''}${r.lastDenied && r.status === 'buscando' ? `<small class="mut">Donante no apto: ${esc(r.lastDenied.name)} (${esc(r.lastDenied.reasons.map(reasonLabel).join('; '))}). Se está buscando otro donante.</small>` : ''}${r.patient ? `<small class="mut">Paciente: ${esc(r.patient)} • ${esc(r.hc || '')} • ${esc(r.bed || '')}</small>` : ''}${r.status === 'completada' && r.delivery === 'preparando' ? `<div class="row"><button class="btn sm" data-act="dispatch">Despachar unidad</button></div>` : r.delivery ? `<small class="mut">Traslado: ${DELIVERY[r.delivery]}${r.assignedTo ? ' • ' + esc(r.assignedTo) : ''}</small>` : ''}</div>`; })()}${(() => { const r = RESERVABLE[0], held = (get().reserved || []).includes(r.id); return `<div class="inc"><span class="badge ${held ? 'ok' : 'red'}">${held ? 'RESERVADA' : 'URGENTE'}</span><b>${r.hospital}</b><small>Reclama: ${r.units} unidades ${r.blood} (${r.reason})</small><div class="row">${held ? `<button class="btn ghost sm" data-act="releaseReq" data-id="${r.id}">Liberar reserva</button>` : `<button class="btn sm" data-act="reserveReq" data-id="${r.id}">Aceptar y Preparar</button>`}<button class="btn ghost sm" data-act="detailReq" data-id="${r.id}">Ver Detalles</button></div></div>`; })()}<div class="inc"><span class="badge warn">En revisión</span><b>Hospital Central del Valle</b><small>Necesita: 2 unidades A+</small></div><div class="inc"><span class="badge">Programada</span><b>Clínica Santa María</b><small>Necesita: 6 unidades B+</small></div></div>`)}</div></div>`,
+    render: () => {
+      const userAddedTotal = (get().inventory || []).filter((u) => u.isUserAdded && getUnitExpirationInfo(u).dispatchable).length;
+      const totalUnits = 342 + userAddedTotal;
+      const stats = checkExpirations();
+      const invFilter = {
+        search: get().invSearch || '',
+        blood: get().invBlood || 'Todos',
+        component: get().invComponent || 'Todos',
+        status: get().invStatus || 'Todos'
+      };
+      const items = getInventory(invFilter);
+      const hasActiveFilters = !!(invFilter.search || (invFilter.blood && invFilter.blood !== 'Todos') || (invFilter.component && invFilter.component !== 'Todos') || (invFilter.status && invFilter.status !== 'Todos'));
+
+      return `<div class="between"><div><h1>Banco de Sangre Central</h1><p class="mut">Panel de Control e Inventario de Cámaras Frigoríficas</p></div><small class="mut">${date()}</small></div><div class="grid kpi" style="margin:16px 0">${[['Unidades totales', totalUnits, '▲ +12 hoy', 'ok'], ['Solicitudes pendientes', 5, 'En espera', 'warn'], ['Alertas críticas', stockNow().filter(([, , st]) => st === 'CRÍTICO').length, 'CRÍTICO', 'red'], ['Donaciones hoy', get().appts.filter((a) => a.state === 'Completada').length + 16, 'Meta: 25', '']].map(([l, n, b, c]) => card(`<small class="mut">${l}</small><h1>${n}</h1>${badge(b, c)}`)).join('')}</div><div class="split"><div>${card(`<div class="between"><div><h3>Matriz de Stock — Cámaras Frigoríficas</h3><small class="mut">Monitor de temperatura y reservas por grupo</small></div>${badge('• Tiempo real', 'ok')}</div>${table(['Grupo', 'Bolsas disponibles', 'Estado', 'Actualización'], stockNow().map(([g, n, s], i) => `<tr><td>${chip(g, s === 'CRÍTICO' ? 'red' : '')}</td><td><b>${n} bolsas</b></td><td>${badge(s, level[s])}</td><td class="mut">${ago(seedAt() - (i + 1) * 3600000)}</td></tr>`))}`)}${card(`<div class="between"><div><h3>Lanzar Convocatoria a Donantes</h3><small class="mut">${get().campaign ? `Campaña activa • ${get().campaign.blood.join(', ')} • ${get().campaign.notified} donantes notificados` : 'Alerta push a donantes del grupo en escasez'}</small></div>${get().campaign ? '<button class="btn ghost sm" data-act="endCampaign">Finalizar campaña</button>' : '<button class="btn sm" data-act="startCampaign">Iniciar Campaña de Alerta</button>'}</div>`)}</div><div>${card(`<h3>Solicitudes Entrantes</h3><div class="stack" style="margin-top:10px">${(() => { const r = get().req; if (!r || ['cancelada', 'cerrada'].includes(r.status)) return ''; const lab = { buscando: [r.lastDenied ? 'BUSCANDO OTRO DONANTE' : 'BUSCANDO', 'red'], esperando: ['DONANTE ACEPTÓ', 'warn'], programada: ['CITA PROGRAMADA', 'warn'], completada: ['DONACIÓN COMPLETA', 'ok'] }[r.status] || ['EN CURSO', '']; return `<div class="inc"><span class="badge ${lab[1]}">${lab[0]}</span><b>${esc(r.hospital)} • ${esc(r.id)}</b><small>${r.units} u. ${esc(r.blood)} • ${esc(r.component)} • ${esc(r.area)}</small>${r.donor ? `<small class="mut">Donante: ${esc(shortName(r.donor.name))}${r.appt ? ' • cita ' + esc(r.appt.time) : ''}</small>` : ''}${r.lastDenied && r.status === 'buscando' ? `<small class="mut">Donante no apto: ${esc(r.lastDenied.name)} (${esc(r.lastDenied.reasons.map(reasonLabel).join('; '))}). Se está buscando otro donante.</small>` : ''}${r.patient ? `<small class="mut">Paciente: ${esc(r.patient)} • ${esc(r.hc || '')} • ${esc(r.bed || '')}</small>` : ''}${r.status === 'completada' && r.delivery === 'preparando' ? `<div class="row"><button class="btn sm" data-act="dispatch">Despachar unidad</button></div>` : r.delivery ? `<small class="mut">Traslado: ${DELIVERY[r.delivery]}${r.assignedTo ? ' • ' + esc(r.assignedTo) : ''}</small>` : ''}</div>`; })()}${(() => { const r = RESERVABLE[0], held = (get().reserved || []).includes(r.id); return `<div class="inc"><span class="badge ${held ? 'ok' : 'red'}">${held ? 'RESERVADA' : 'URGENTE'}</span><b>${r.hospital}</b><small>Reclama: ${r.units} unidades ${r.blood} (${r.reason})</small><div class="row">${held ? `<button class="btn ghost sm" data-act="releaseReq" data-id="${r.id}">Liberar reserva</button>` : `<button class="btn sm" data-act="reserveReq" data-id="${r.id}">Aceptar y Preparar</button>`}<button class="btn ghost sm" data-act="detailReq" data-id="${r.id}">Ver Detalles</button></div></div>`; })()}<div class="inc"><span class="badge warn">En revisión</span><b>Hospital Central del Valle</b><small>Necesita: 2 unidades A+</small></div><div class="inc"><span class="badge">Programada</span><b>Clínica Santa María</b><small>Necesita: 6 unidades B+</small></div></div>`)}</div></div>
+<div class="card full" id="secInventory" role="region" aria-label="Gestión de inventario de unidades y caducidades" style="margin-top:20px">
+  <div class="between" style="flex-wrap:wrap;gap:12px;margin-bottom:14px">
+    <div>
+      <h2 style="display:flex;align-items:center;gap:8px"><i>${icon('drop', 20)}</i> Control de Inventario y Caducidades</h2>
+      <p class="mut" style="font-size:13px;margin-top:2px">Monitoreo de unidades en frío, cálculo de vida útil y semáforo de vencimiento (NOM-253-SSA1-2012)</p>
+    </div>
+    <button class="btn sm" data-act="openNewBagModal" id="btnNewBag" style="width:auto">${icon('plus', 16)} Alta de Unidad / Bolsa</button>
+  </div>
+  <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-bottom:14px">
+    <div class="stat left" style="border-left:4px solid var(--blue-solid)"><small class="lbl">TOTAL BOLSAS</small><b style="font-size:22px">${stats.total}</b><small class="mut">En banco central</small></div>
+    <div class="stat left" style="border-left:4px solid var(--ok-solid)"><small class="lbl">VIGENTES / ÓPTIMAS</small><b style="font-size:22px;color:var(--ok-text)">${stats.vigentes}</b><small class="mut">Listas para despacho</small></div>
+    <div class="stat left" style="border-left:4px solid var(--warn-solid)"><small class="lbl">POR VENCER (≤ 5 DÍAS)</small><b style="font-size:22px;color:var(--warn-text)">${stats.porVencer}</b><small class="mut">Prioridad crítica</small></div>
+    <div class="stat left" style="border-left:4px solid var(--red-solid)"><small class="lbl">CADUCADAS / CUARENTENA</small><b style="font-size:22px;color:var(--red-text)">${stats.caducadas + stats.cuarentena}</b><small class="mut">Bloqueadas para uso</small></div>
+  </div>
+  <div class="inv-toolbar">
+    <div><input id="invSearch" type="search" placeholder="Buscar por código, ubicación o donante..." value="${esc(invFilter.search)}" autocomplete="off" aria-label="Buscar en inventario"></div>
+    <div><select id="invBlood" aria-label="Filtrar por grupo sanguíneo"><option value="Todos">Grupo: Todos</option>${['O+', 'O-', 'A+', 'A-', 'B+', 'B-', 'AB+', 'AB-'].map((b) => `<option value="${b}" ${invFilter.blood === b ? 'selected' : ''}>${b}</option>`).join('')}</select></div>
+    <div><select id="invComponent" aria-label="Filtrar por hemocomponente"><option value="Todos">Componente: Todos</option><option value="Concentrado eritrocitario" ${invFilter.component === 'Concentrado eritrocitario' ? 'selected' : ''}>Concentrado eritrocitario</option><option value="Sangre total" ${invFilter.component === 'Sangre total' ? 'selected' : ''}>Sangre total</option><option value="Plaquetas por aféresis" ${invFilter.component === 'Plaquetas por aféresis' ? 'selected' : ''}>Plaquetas por aféresis</option><option value="Plasma fresco congelado" ${invFilter.component === 'Plasma fresco congelado' ? 'selected' : ''}>Plasma fresco congelado</option></select></div>
+    <div><select id="invStatus" aria-label="Filtrar por estado de caducidad"><option value="Todos">Estado: Todos</option><option value="vigente" ${invFilter.status === 'vigente' ? 'selected' : ''}>Vigente</option><option value="por_vencer" ${invFilter.status === 'por_vencer' ? 'selected' : ''}>Por vencer</option><option value="caducado" ${invFilter.status === 'caducado' ? 'selected' : ''}>Caducada</option><option value="cuarentena" ${invFilter.status === 'cuarentena' ? 'selected' : ''}>Cuarentena</option></select></div>
+    ${hasActiveFilters ? `<button class="btn ghost sm" data-act="resetInvFilters" aria-label="Limpiar filtros" style="white-space:nowrap">${icon('x', 14)} Limpiar</button>` : ''}
+  </div>
+  <div id="invTableContainer">${renderInventoryTable(items)}</div>
+</div>`;
+    },
+    mount: (root) => {
+      const search = root.querySelector('#invSearch');
+      const blood = root.querySelector('#invBlood');
+      const comp = root.querySelector('#invComponent');
+      const st = root.querySelector('#invStatus');
+
+      const update = () => {
+        const container = root.querySelector('#invTableContainer');
+        if (!container) return;
+        const currentFilters = {
+          search: search?.value || '',
+          blood: blood?.value || 'Todos',
+          component: comp?.value || 'Todos',
+          status: st?.value || 'Todos'
+        };
+        set({
+          invSearch: currentFilters.search,
+          invBlood: currentFilters.blood,
+          invComponent: currentFilters.component,
+          invStatus: currentFilters.status
+        });
+        const filtered = getInventory(currentFilters);
+        container.innerHTML = renderInventoryTable(filtered);
+      };
+
+      search?.addEventListener('input', update);
+      blood?.addEventListener('change', update);
+      comp?.addEventListener('change', update);
+      st?.addEventListener('change', update);
+
+      return () => {
+        search?.removeEventListener('input', update);
+        blood?.removeEventListener('change', update);
+        comp?.removeEventListener('change', update);
+        st?.removeEventListener('change', update);
+      };
+    }
   },
 
   'b/appts': {
     role: 'bank', wide: true,
-    render: () => { const t = get().apptTab || 'Todos', A = get().appts, sel = A.find((a) => a.id === get().selAppt) || A[0], rows = A.filter((a) => t === 'Todos' || a.state === t); return `<div class="between"><div><h1>Gestión de Citas</h1><p class="mut">Recepción y validación de donantes con Pase Digital QR</p></div></div><div class="split rev" style="margin-top:16px"><div>${card(`<div class="between"><h3>Agenda del Día</h3><div class="seg">${['Todos', 'Pre-Triaje', 'Extracción', 'Completada'].map((x) => `<button class="${t === x ? 'on' : ''}" data-act="tab" data-v="${x}">${x}</button>`).join('')}</div></div>${table(['Hora', 'Donante', 'Grupo', 'Folio', 'Estado'], rows.map((a) => `<tr class="pick ${a.id === sel.id ? 'on' : ''}" data-act="pick" data-id="${a.id}"><td><b>${a.time}</b></td><td>${esc(a.name)}</td><td class="redtxt"><b>${a.blood || ''}</b></td><td>${a.id}</td><td>${badge(a.state, a.state === 'Completada' ? 'ok' : a.state === 'Extracción' ? 'warn' : ['No asistió', 'Rechazada'].includes(a.state) ? 'red' : '')}</td></tr>`), 'h4')}`)}</div><div>${card(`<h3>Validación de Pase QR</h3><div class="center stack" style="margin-top:12px"><div class="ring">${esc(initials(sel.name))}</div><b>${esc(sel.name)}</b><small class="mut">Folio: ${sel.id}</small><div class="banner info">Grupo: ${sel.blood || 'O+'}</div></div><div class="stack" style="margin:12px 0"><div>✓ Ayuno obligatorio (4–6 hrs)</div><div>✓ Identificación oficial validada</div><div>✓ Pre-registro médico aprobado</div></div><div class="stack">${sel.state === 'Extracción' ? btn('Evaluar donación', { go: 'b/evaluate', v: 'ok' }) : btn('Autorizar Ingreso', { act: 'authorize', v: 'ok' })}${btn('Rechazar Acceso', { go: 'b/deny', v: 'ghost' })}${btn('Escanear QR', { act: 'scanAppt', v: 'ghost' })}</div>`)}</div></div>`; },
+    render: () => {
+      const t = get().apptTab || 'Todos', A = get().appts || [];
+      const rows = A.filter((a) => t === 'Todos' || a.state === t);
+      const sel = A.find((a) => a.id === get().selAppt) || rows[0] || A[0] || null;
+      const agendaContent = rows.length
+        ? table(['Hora', 'Donante', 'Grupo', 'Folio', 'Estado'], rows.map((a) => `<tr class="pick ${sel && a.id === sel.id ? 'on' : ''}" data-act="pick" data-id="${a.id}"><td><b>${a.time}</b></td><td>${esc(a.name)}</td><td class="redtxt"><b>${a.blood || ''}</b></td><td>${a.id}</td><td>${badge(a.state, a.state === 'Completada' ? 'ok' : a.state === 'Extracción' ? 'warn' : ['No asistió', 'Rechazada'].includes(a.state) ? 'red' : '')}</td></tr>`), 'h4')
+        : emptyState({
+            iconName: 'calendar',
+            title: 'No hay citas en este filtro',
+            text: `No se encontraron citas programadas en la categoría "${esc(t)}".`,
+            actionBtn: t !== 'Todos' ? btn('Ver todas las citas', { act: 'tab', v: 'ghost sm' }).replace('data-act="tab"', 'data-act="tab" data-v="Todos"') : '',
+            cls: 'in-panel'
+          });
+
+      const selContent = sel
+        ? `<div class="center stack" style="margin-top:12px"><div class="ring">${esc(initials(sel.name))}</div><b>${esc(sel.name)}</b><small class="mut">Folio: ${sel.id}</small><div class="banner info">Grupo: ${sel.blood || 'O+'}</div></div><div class="stack" style="margin:12px 0"><div>✓ Ayuno obligatorio (4–6 hrs)</div><div>✓ Identificación oficial validada</div><div>✓ Pre-registro médico aprobado</div></div><div class="stack">${sel.state === 'Extracción' ? btn('Evaluar donación', { go: 'b/evaluate', v: 'ok' }) : btn('Autorizar Ingreso', { act: 'authorize', v: 'ok' })}${btn('Rechazar Acceso', { go: 'b/deny', v: 'ghost' })}${btn('Escanear QR', { act: 'scanAppt', v: 'ghost' })}</div>`
+        : emptyState({
+            iconName: 'user',
+            title: 'Ninguna cita seleccionada',
+            text: 'Selecciona una cita de la agenda para validar su pase de acceso QR y autorización de ingreso.',
+            cls: 'in-panel'
+          });
+
+      return `<div class="between"><div><h1>Gestión de Citas</h1><p class="mut">Recepción y validación de donantes con Pase Digital QR</p></div></div><div class="split rev" style="margin-top:16px"><div>${card(`<div class="between"><h3>Agenda del Día</h3><div class="seg">${['Todos', 'Pre-Triaje', 'Extracción', 'Completada'].map((x) => `<button class="${t === x ? 'on' : ''}" data-act="tab" data-v="${x}">${x}</button>`).join('')}</div></div>${agendaContent}`)}</div><div>${card(`<h3>Validación de Pase QR</h3>${selContent}`)}</div></div>`;
+    },
   },
 
   'b/fleet': {
     role: 'bank', wide: true,
-    render: () => { const U = fleetUnits(), cnt = (st) => U.filter((u) => u.state === st).length; return `<h1>Radar de Ambulancias</h1><p class="mut" style="margin-bottom:16px">Coordinación logística de traslado de unidades biológicas</p><div class="split rev">${card(`<div id="fleetMap" class="lmap" role="region" aria-label="Mapa interactivo de ambulancias y destinos" tabindex="0">Cargando mapa…</div><div class="between" style="margin-top:12px"><small>${U.length - cnt('Ocupada')} Unidades activas</small><small>${cnt('Disponible')} Disponibles</small><small>${cnt('En tránsito') + cnt('Asignada')} En ruta o asignadas</small></div><ul class="legend" aria-label="Leyenda del mapa"><li><i class="pin-dot bank"></i>Banco</li><li><i class="pin-dot hosp"></i>Hospital</li><li><i class="pin-dot ok"></i>Disponible</li><li><i class="pin-dot warn"></i>En tránsito</li><li><i class="pin-dot asg"></i>Asignada</li><li><i class="pin-dot off"></i>Ocupada</li></ul><p class="mut" id="routeSrc" role="status"><small>Calculando rutas…</small></p>`)}${card(`<h3>Reasignación Manual</h3>${U.map((u) => `<div class="inc"><div class="between"><b>${u.id}</b>${badge(u.state, u.state === 'Disponible' ? 'ok' : u.state === 'Ocupada' ? '' : 'warn')}</div><small class="mut">Chofer: ${esc(u.driver)}<span data-info="${u.id}"></span></small><div class="row inc-actions"><button class="btn ghost sm" data-amb="${u.id}" aria-label="Ver en mapa ${u.id}">${icon('route', 16)} Ver en mapa</button>${u.state === 'Disponible' ? `<button class="btn sm" data-act="forceAssign" data-id="${u.id}">Forzar Asignación</button>` : u.state === 'Asignada' ? `<button class="btn ghost sm" data-act="releaseUnit" data-id="${u.id}">Liberar unidad</button>` : ''}</div></div>`).join('')}`)}</div>`; },
+    render: () => {
+      const U = fleetUnits(), cnt = (st) => U.filter((u) => u.state === st).length;
+      return `<h1>Radar de Ambulancias</h1><p class="mut" style="margin-bottom:16px">Coordinación logística de traslado de unidades biológicas</p><div class="split rev">${card(`<div id="fleetMap" class="lmap" role="region" aria-label="Mapa interactivo de ambulancias y destinos" tabindex="0"><div class="map-loading" role="status" aria-live="polite" aria-busy="true"><div class="spin-ring md" aria-hidden="true"></div><p>Cargando mapa interactivo y telemetría de unidades...</p></div></div><div class="between" style="margin-top:12px"><small>${U.length - cnt('Ocupada')} Unidades activas</small><small>${cnt('Disponible')} Disponibles</small><small>${cnt('En tránsito') + cnt('Asignada')} En ruta o asignadas</small></div><ul class="legend" aria-label="Leyenda del mapa"><li><i class="pin-dot bank"></i>Banco</li><li><i class="pin-dot hosp"></i>Hospital</li><li><i class="pin-dot ok"></i>Disponible</li><li><i class="pin-dot warn"></i>En tránsito</li><li><i class="pin-dot asg"></i>Asignada</li><li><i class="pin-dot off"></i>Ocupada</li></ul><p class="mut" id="routeSrc" role="status"><small>Calculando rutas…</small></p>`)}${card(`<h3>Reasignación Manual</h3>${U.map((u) => `<div class="inc"><div class="between"><b>${u.id}</b>${badge(u.state, u.state === 'Disponible' ? 'ok' : u.state === 'Ocupada' ? '' : 'warn')}</div><small class="mut">Chofer: ${esc(u.driver)}<span data-info="${u.id}"></span></small><div class="row inc-actions"><button class="btn ghost sm" data-amb="${u.id}" aria-label="Ver en mapa ${u.id}">${icon('route', 16)} Ver en mapa</button>${u.state === 'Disponible' ? `<button class="btn sm" data-act="forceAssign" data-id="${u.id}">Forzar Asignación</button>` : u.state === 'Asignada' ? `<button class="btn ghost sm" data-act="releaseUnit" data-id="${u.id}">Liberar unidad</button>` : ''}</div></div>`).join('')}`)}</div>`;
+    },
     mount: fleetMount,
   },
 

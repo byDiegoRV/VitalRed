@@ -103,7 +103,21 @@ const pin = (L, kind, label, ic) => L.divIcon({
   iconSize: [34, 34], iconAnchor: [17, 17], popupAnchor: [0, -18],
 });
 
+export const renderMapError = (el, onRetry = true) => {
+  if (!el) return;
+  el.classList.add('nomap');
+  el.innerHTML = `
+    <div class="map-error-card" role="alert">
+      <div class="map-error-icon">${icon('alert', 36)}</div>
+      <h3 class="map-error-title">Sin conexión a mapas interactivos</h3>
+      <p class="map-error-desc">No se pudo cargar la cartografía de OpenStreetMap. Las rutas y tiempos continúan operando en modo simulado de contingencia.</p>
+      ${onRetry ? `<button class="btn ghost sm" data-act="retryMap" type="button" style="display:inline-block;width:auto">${icon('route', 16)} Reintentar conexión</button>` : ''}
+    </div>
+  `;
+};
+
 const baseMap = async (el, bounds) => {
+  el.innerHTML = `<div class="map-loading" role="status" aria-live="polite" aria-busy="true"><div class="spin-ring md" aria-hidden="true"></div><p>Cargando cartografía y telemetría...</p></div>`;
   const L = await loadLeaflet();
   el.textContent = '';
   const map = L.map(el, { scrollWheelZoom: false, zoomSnap: 0.5 });
@@ -122,7 +136,11 @@ const baseMap = async (el, bounds) => {
 const lazyMount = (init) => (root) => {
   let dead = false, stop = () => {};
   Promise.resolve(init(root, () => dead)).then((fn) => { if (typeof fn === 'function') { if (dead) fn(); else stop = fn; } })
-    .catch(() => { const m = root.querySelector('.lmap'); if (m) { m.classList.add('nomap'); m.textContent = 'No se pudo cargar el mapa interactivo.'; } });
+    .catch((err) => {
+      console.warn('[VitalRed map load error]', err);
+      const m = root.querySelector('.lmap');
+      if (m) renderMapError(m, true);
+    });
   return () => { dead = true; stop(); };
 };
 
@@ -158,6 +176,7 @@ export const fleetMount = lazyMount(async (root, isDead) => {
   const mover = units.find((u) => u.progress != null);
   let p = mover?.progress ?? 0;
   const label = root.querySelector('#routeSrc');
+  if (label) label.innerHTML = '<span class="spin-ring sm" style="vertical-align:middle;margin-right:6px" aria-hidden="true"></span> <span>Calculando rutas viales en tiempo real…</span>';
   // 1) ruta principal banco -> hospital
   main = await calcRoute(BANK.ll, hosp);
   if (isDead()) { map.remove(); return null; }
@@ -165,7 +184,10 @@ export const fleetMount = lazyMount(async (root, isDead) => {
   line = L.polyline(main.coords, { color: '#175cd3', weight: 5, opacity: 0.85, dashArray: main.real ? null : '8 8' }).addTo(map);
   map.fitBounds(line.getBounds().pad(0.3));
   if (mover) { marks[mover.id].setLatLng(track.at(p)); refresh(mover); timer = setInterval(() => { p = p >= 0.95 ? 0.05 : p + 0.02; marks[mover.id].setLatLng(track.at(p)); refresh({ ...mover, progress: p }); }, 1500); }
-  if (label) label.textContent = srcText(main.real);
+  if (label) {
+    if (main.real) label.textContent = srcText(true);
+    else label.innerHTML = '<span class="badge warn" style="vertical-align:middle;margin-right:6px">Modo sin conexión</span> <span>' + esc(srcText(false)) + '</span>';
+  }
   // 2) ruta de cada unidad disponible hacia el banco (una por segundo, según la política del servicio)
   (async () => {
     let real = main.real;
@@ -174,7 +196,10 @@ export const fleetMount = lazyMount(async (root, isDead) => {
       info[u.id] = await calcRoute(u.ll, BANK.ll); real = real && info[u.id].real;
       if (isDead()) return; refresh(u);
     }
-    if (label && !isDead()) label.textContent = srcText(real);
+    if (label && !isDead()) {
+      if (real) label.textContent = srcText(true);
+      else label.innerHTML = '<span class="badge warn" style="vertical-align:middle;margin-right:6px">Modo sin conexión</span> <span>' + esc(srcText(false)) + '</span>';
+    }
   })();
   const onClick = (e) => {
     const b = e.target.closest('[data-amb]');
@@ -212,7 +237,10 @@ export const mountTripMap = (root, trip, { onRoute } = {}) => {
       const veh = L.marker(track.at(pct / 100), { icon: pin(L, 'warn', trip.id, 'truck'), title: `Unidad en ruta ${trip.id}`, alt: `Unidad en ruta ${trip.id}`, zIndexOffset: 500 }).addTo(map);
       api.move = (v) => veh.setLatLng(track.at(v / 100));
       onRoute?.(r);
-    }).catch(() => { el.classList.add('nomap'); el.textContent = 'No se pudo cargar el mapa interactivo.'; });
+    }).catch((err) => {
+      console.warn('[VitalRed trip map error]', err);
+      renderMapError(el, true);
+    });
   }
   return {
     setProgress(v) { pct = v; api?.move(v); },
