@@ -509,15 +509,72 @@ const actions = {
     const errs = reqErrors(), ids = Object.keys(errs);
     if (ids.length) { ids.forEach((i) => fail(i, errs[i])); document.getElementById(ids[0])?.focus(); return toast('Completa los datos del paciente', 'err'); }
     const blood = sel('blood'), u = currentUser(), now = Date.now();
-    set({ req: { id: nextReqId(), blood, units: +document.getElementById('units').textContent, priority: sel('priority'), component: val('component'), area: val('area'), hospital: val('hospital') || u.hospital || 'Hospital General', patient: val('patient'), hc: val('hc'), bed: val('bed'), diagnosis: val('diagnosis'), requester: u.name, status: 'buscando', notified: eligibleDonors(blood).length, createdAt: new Date(now).toISOString(), by: u.email, log: [{ k: 'creada', at: now }, { k: 'buscando', at: now }] }, inFlow: false, triage: null, triageAns: null });
-    toast('Código Rojo lanzado'); go('m/radar');
+    const newReq = {
+      id: nextReqId(),
+      blood,
+      units: +document.getElementById('units').textContent,
+      priority: sel('priority'),
+      component: val('component'),
+      area: val('area'),
+      hospital: val('hospital') || u.hospital || 'Hospital General',
+      patient: val('patient'),
+      hc: val('hc'),
+      bed: val('bed'),
+      diagnosis: val('diagnosis'),
+      requester: u.name,
+      status: 'buscando',
+      notified: eligibleDonors(blood).length,
+      createdAt: new Date(now).toISOString(),
+      by: u.email,
+      log: [{ k: 'creada', at: now }, { k: 'buscando', at: now }],
+      live: true
+    };
+    const prevRequests = get().requests || [];
+    const updatedRequests = [newReq, ...prevRequests.filter((r) => r.id !== newReq.id)];
+    set({
+      requests: updatedRequests,
+      activeReqId: newReq.id,
+      req: newReq,
+      inFlow: false,
+      triage: null,
+      triageAns: null
+    });
+    toast(`Solicitud ${newReq.id} lanzada al radar`);
+    go('m/radar');
+  },
+  selectReq(el) {
+    const id = el?.dataset?.id || el;
+    const reqs = get().requests || [];
+    const target = reqs.find((r) => r.id === id);
+    if (!target) return;
+    set({ activeReqId: target.id, req: target });
+    route();
+  },
+  focusRadar(el) {
+    actions.selectReq(el);
+    go('m/radar');
   },
   cancelReq() {
     confirmModal('¿Deseas cancelar la búsqueda?', 'Se suspenderá la búsqueda de donantes y el traslado de hemocomponentes. Esta acción afectará la atención del paciente en Quirófano/Urgencias.', () => {
-      const prev = get().req, prevAppts = get().appts, prevMy = get().myAppt;
+      const prev = activeReq() || get().req, prevAppts = get().appts, prevMy = get().myAppt;
       if (prev.donor) set({ inFlow: false, triage: null, triageAns: null, myAppt: null, appts: get().appts.filter((a) => !prev.appt || a.id !== prev.appt.id) });
-      patchReq({ status: 'cancelada' }); go('m/none');
-      toast('Solicitud cancelada', 'ok', { label: 'Deshacer (5s)', run: () => { set({ req: prev, appts: prevAppts, myAppt: prevMy }); toast('Cancelación revertida'); go('m/radar'); } });
+      patchReq({ status: 'cancelada' }, prev.id);
+      const remainingActive = (get().requests || []).filter((r) => r.id !== prev.id && !['cancelada', 'cerrada'].includes(r.status));
+      if (remainingActive.length) {
+        set({ activeReqId: remainingActive[0].id, req: remainingActive[0] });
+        go('m/radar');
+      } else {
+        go('m/none');
+      }
+      toast('Solicitud cancelada', 'ok', {
+        label: 'Deshacer (5s)',
+        run: () => {
+          patchReq({ status: 'buscando' }, prev.id);
+          set({ req: prev, activeReqId: prev.id, appts: prevAppts, myAppt: prevMy });
+          toast('Cancelación revertida');
+          go('m/radar');
+        }
+      });
     }, 'Sí, cancelar', { danger: true, cancel: 'Continuar búsqueda' });
   },
   noResp() { patchReq({ status: 'sinrespuesta' }); },
@@ -637,8 +694,13 @@ const CONFIRMS = {
   back: () => (['d/triage', 'd/review', 'd/schedule'].includes(parseHash().path) ? { title: '¿Salir de este proceso?', text: 'Tu avance en este paso se perderá.', ok: 'Salir', cancel: 'Seguir aquí', danger: true } : null),
   launch: () => {
     if (Object.keys(reqErrors()).length) return null;
-    const crit = sel('priority') === 'CRÍTICA', cur = get().req, replacing = cur && !['cancelada', 'programada'].includes(cur.status);
-    return { title: crit ? '¿Lanzar CÓDIGO ROJO?' : '¿Lanzar la solicitud?', text: `Se alertará a donantes compatibles (${esc(sel('blood'))}) y al banco de sangre.${replacing ? ` <b>La solicitud ${esc(cur.id)} activa será reemplazada.</b>` : ''}`, ok: crit ? 'Lanzar alerta' : 'Lanzar solicitud', ack: crit ? 'Estoy consciente de que es una alerta de emergencia y de que los datos del paciente son correctos.' : undefined };
+    const crit = sel('priority') === 'CRÍTICA';
+    return {
+      title: crit ? '¿Lanzar CÓDIGO ROJO?' : '¿Lanzar la solicitud?',
+      text: `Se alertará a donantes compatibles (${esc(sel('blood'))}) y al banco de sangre. Esta solicitud se sumará a las solicitudes activas de la guardia.`,
+      ok: crit ? 'Lanzar alerta' : 'Lanzar solicitud',
+      ack: crit ? 'Estoy consciente de que es una alerta de emergencia y de que los datos del paciente son correctos.' : undefined
+    };
   },
   retry: () => ({ title: '¿Ampliar el radio a 15 km?', text: 'Se notificará a más donantes, incluso fuera de la zona inicial.', ok: 'Ampliar radio' }),
   external: () => ({ title: '¿Enviar a un banco externo?', text: 'La solicitud saldrá de la red local de VitalRed.', ok: 'Enviar solicitud' }),
@@ -663,7 +725,7 @@ const runClick = (t, e) => {
 };
 
 document.addEventListener('keydown', (e) => {
-  if ((e.key === 'Enter' || e.key === ' ') && e.target.matches?.('[role=button][data-act]')) { e.preventDefault(); e.target.click(); }
+  if ((e.key === 'Enter' || e.key === ' ') && e.target.matches?.('[role=button][data-act], [role=tab][data-act]')) { e.preventDefault(); e.target.click(); }
 });
 
 document.addEventListener('click', (e) => {

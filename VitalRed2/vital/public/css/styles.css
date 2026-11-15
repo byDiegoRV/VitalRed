@@ -183,6 +183,16 @@ body[data-role]:not([data-role=guest]) textarea{cursor:text}
 .tl li.done{color:var(--ok-text)}.tl li.done i{background:var(--ok-solid);border-color:var(--ok-solid)}
 .tl li.now{color:var(--txt);font-weight:700}.tl li.now i{border-color:var(--red-solid);box-shadow:0 0 0 4px color-mix(in srgb,var(--red) 22%,transparent)}
 
+/* ===== SELECTOR DE MÚLTIPLES SOLICITUDES EN RADAR (TAREA 19 - HEURÍSTICAS NIELSEN / SHNEIDERMAN) ===== */
+.radar-switcher-wrap{margin-bottom:16px}
+.radar-switcher{display:flex;gap:10px;overflow-x:auto;padding:4px 2px 14px;scrollbar-width:thin;scroll-snap-type:x mandatory}
+.radar-card-tab{flex:0 0 240px;scroll-snap-align:start;background:var(--card);border:1.5px solid var(--line);border-radius:14px;padding:12px 14px;cursor:pointer;text-align:left;transition:border-color var(--ease),box-shadow var(--ease),transform var(--ease);display:flex;flex-direction:column;gap:6px;min-height:54px;user-select:none}
+.radar-card-tab:hover{border-color:var(--mut);transform:translateY(-1px)}
+.radar-card-tab.active{border-color:var(--red-solid);background:color-mix(in srgb,var(--red) 9%,var(--card));box-shadow:0 6px 18px rgba(217,45,32,.22)}
+.radar-card-tab:focus-visible{outline:3px solid color-mix(in srgb,var(--blue) 60%,transparent);outline-offset:2px}
+.radar-card-new{flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;gap:6px;min-height:54px;padding:0 16px;border-radius:14px;border:1.5px dashed var(--line);background:var(--soft);color:var(--txt);font-weight:700;font-size:13px;cursor:pointer;white-space:nowrap;transition:var(--ease)}
+.radar-card-new:hover{border-color:var(--red);color:var(--red-text);background:color-mix(in srgb,var(--red) 6%,var(--card))}
+
 /* Pantallas grandes / Escritorio */
 @media(min-width:900px){
   .tabs{justify-content:center}

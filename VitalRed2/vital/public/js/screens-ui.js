@@ -29,6 +29,29 @@ const seedReqs = () => {
 };
 
 const reqList = () => {
+  const stored = get().requests;
+  if (Array.isArray(stored) && stored.length) {
+    return stored.map((r) => ({
+      id: r.id,
+      blood: r.blood,
+      patient: r.patient || 'Paciente en curso',
+      hc: r.hc || 'HC nuevo',
+      bed: r.bed || r.area || 'Urgencias',
+      area: r.area || 'Urgencias',
+      label: reqLabel(r),
+      color: r.priority === 'CRÍTICA' ? 'red' : r.status === 'completada' ? 'ok' : 'warn',
+      units: r.units,
+      component: r.component || 'Concentrado de hematíes',
+      priority: r.priority || 'ALTA',
+      hospital: r.hospital || 'Hospital General',
+      diagnosis: r.diagnosis || 'Urgencia transfusional',
+      stage: r.status,
+      at: Date.parse(r.createdAt) || r.at || Date.now(),
+      requester: r.requester || 'Dra. Ana Torres',
+      donor: r.donor ? (typeof r.donor === 'string' ? r.donor : `${r.donor.name} • ${r.donor.blood || r.blood}`) : undefined,
+      live: true
+    }));
+  }
   const r = get().req;
   const live = r && activeReq() ? [{ id: r.id, blood: r.blood, patient: r.patient || 'Paciente en curso', hc: r.hc || 'HC nuevo', bed: r.bed || r.area, area: r.area, label: reqLabel(r), color: 'warn', units: r.units, component: r.component, priority: r.priority, hospital: r.hospital, diagnosis: r.diagnosis, stage: r.status, at: Date.parse(r.createdAt) || Date.now(), requester: r.requester, live: true }] : [];
   return [...live, ...seedReqs()];
@@ -468,13 +491,55 @@ export const overrides = {
   'm/radar': {
     role: 'medical',
     render: () => {
-      const r = get().req;
-      if (!r) return statusScreen(icon('radar', 44), 'Sin solicitud', 'Crea una solicitud para activar el radar.', btn('Nueva solicitud', { go: 'm/new' }));
+      const allActive = (get().requests || []).filter((x) => !['cancelada', 'cerrada'].includes(x.status));
+      const cur = (get().requests || []).find((x) => x.id === get().activeReqId) || get().req || allActive[0];
+      if (!cur && !allActive.length) {
+        return statusScreen(icon('radar', 44), 'Sin solicitudes activas', 'No hay solicitudes transfusionales activas en la guardia. Puedes emitir una nueva alerta Código Rojo.', btn('Nueva solicitud urgente', { go: 'm/new' }));
+      }
+      const r = cur || allActive[0];
       const idx = { buscando: 1, sinrespuesta: 1, esperando: 2, programada: 3, completada: 4, cerrada: 4 }[r.status] ?? 1, head = stepper(REQ_STEPS, idx);
       const sim = (label) => btn(label, { act: 'simStage', v: 'ghost' });
       const row = (k, v) => `<div class="item"><span class="mut">${k}</span><b>${v}</b></div>`;
-      const sub = `${r.units} u. de ${esc(r.blood)} • ${esc(r.component || '')} • ${esc(r.hospital)}`;
-      const wrap = (html) => card(`${html}<div class="stack" style="margin-top:12px">${btn('Ver detalle completo y línea de tiempo', { go: `m/detail?id=${r.id}`, v: 'ghost' })}</div>`);
+      const sub = `${r.units} u. de ${esc(r.blood)} • ${esc(r.component || '')} • ${esc(r.hospital || 'Hospital General')}`;
+
+      const switcherHtml = allActive.length ? `
+        <div class="radar-switcher-wrap" role="region" aria-label="Solicitudes transfusionales activas">
+          <div class="between" style="margin-bottom:8px">
+            <span class="lbl" style="font-size:11px;font-weight:700;letter-spacing:.05em;color:var(--mut)">SOLICITUDES ACTIVAS EN LA GUARDIA (${allActive.length})</span>
+            <button class="btn ghost sm" data-go="m/new" type="button" style="min-height:36px;padding:4px 12px;font-size:12px;width:auto">${icon('drop', 14)} ＋ Nueva alerta</button>
+          </div>
+          <div class="radar-switcher" role="tablist" aria-label="Selector de solicitudes activas">
+            ${allActive.map((x) => {
+              const isSel = x.id === r.id;
+              const statusTxt = { buscando: 'Buscando donantes', sinrespuesta: 'Sin respuesta', esperando: 'Donante en camino', programada: 'Cita agendada', completada: 'En logística / Lista' }[x.status] || x.status;
+              return `
+                <div class="radar-card-tab ${isSel ? 'active' : ''}"
+                     role="tab"
+                     tabindex="0"
+                     aria-selected="${isSel ? 'true' : 'false'}"
+                     data-act="selectReq"
+                     data-id="${x.id}"
+                     aria-label="Solicitud ${x.id}, paciente ${esc(shortName(x.patient || 'Paciente'))}, grupo ${esc(x.blood)}">
+                  <div class="between" style="gap:6px">
+                    <b class="redtxt" style="font-size:13px">${esc(x.id)}</b>
+                    ${badge(x.priority === 'CRÍTICA' ? 'CÓDIGO ROJO' : x.priority, x.priority === 'CRÍTICA' ? 'red' : 'warn')}
+                  </div>
+                  <div style="font-size:13px;line-height:1.25">
+                    <b>${esc(shortName(x.patient || 'Paciente'))}</b>
+                    <small class="mut" style="display:block">${esc(x.bed || x.area || 'Urgencias')}</small>
+                  </div>
+                  <div class="between" style="margin-top:2px">
+                    ${chip(x.blood, x.priority === 'CRÍTICA' ? 'red' : '')}
+                    <small class="mut" style="font-weight:700;font-size:11px">• ${statusTxt}</small>
+                  </div>
+                </div>
+              `;
+            }).join('')}
+          </div>
+        </div>
+      ` : '';
+
+      const wrap = (html) => `${switcherHtml}${card(`${html}<div class="stack" style="margin-top:12px">${btn('Ver detalle completo y línea de tiempo', { go: `m/detail?id=${r.id}`, v: 'ghost' })}</div>`)}`;
       if (r.status === 'cerrada') return wrap(`${head}<div class="center stack"><div class="big ok-ring">${icon('check', 40)}</div><h2>Caso cerrado</h2><p class="mut">${sub}</p><p class="mut">La unidad fue recibida y la transfusión inició. Quedó registrada en la trazabilidad.</p>${btn('Nueva solicitud', { go: 'm/new' })}</div>`);
       if (r.status === 'completada') {
         const d = r.delivery || 'preparando', steps = [['preparando', 'Donación aprobada • preparando envío'], ['despachada', 'Unidad despachada • esperando transportista'], ['asignada', 'Transportista asignado'], ['en_ruta', 'Unidad en ruta hacia el hospital'], ['entregada', 'Unidad entregada en el hospital']], at = steps.findIndex(([k]) => k === d), t = get().trip, simLabel = { preparando: 'Simular: banco despacha la unidad', despachada: 'Simular: un transportista toma el viaje', asignada: 'Simular: inicia el traslado', en_ruta: 'Simular: unidad entregada' }[d];
@@ -778,7 +843,7 @@ export const overrides = {
       const live = all.filter((x) => x.priority !== 'CANCELADA'), crit = live.filter((x) => x.priority === 'CRÍTICA').length, units = live.reduce((n, x) => n + (x.units || 0), 0);
       const kpis = [['Solicitudes activas', live.length, 'En curso', 'warn'], ['Críticas', crit, 'CÓDIGO ROJO', 'red'], ['Unidades solicitadas', units, 'Hemocomponentes', ''], ['Banco de sangre', 'En línea', `a las ${hhmm(Date.now())}`, 'ok']];
       const reqsHtml = rows.length
-        ? rows.map((x) => `<div class="card req ${x.priority === 'CANCELADA' ? 'dim' : ''}"><div class="between"><div class="row" style="flex:none;gap:12px">${chip(x.blood, x.priority === 'CRÍTICA' ? 'red' : '')}<div><b>${esc(shortName(x.patient))} • ${esc(x.hc)}</b><br><small class="mut">${esc(x.bed)}</small></div></div>${badge(x.label, x.color)}</div><hr><div class="between"><div><small class="lbl">HEMOCOMPONENTE</small><br>${esc(x.component)} • ${x.units} unidad${x.units > 1 ? 'es' : ''}</div><div><small class="lbl">PRIORIDAD</small><br><b class="${x.priority === 'CRÍTICA' ? 'redtxt' : ''}">${x.priority}</b></div><div class="right"><small class="lbl">${esc(x.id)}</small><br>${x.scheduled ? `Hoy • ${hhmm(x.at)}` : ago(x.at)}</div></div><div style="margin-top:12px">${btn('Ver detalle completo', { go: `m/detail?id=${x.id}`, v: 'ghost', cls: 'sm' })}</div></div>`).join('')
+        ? rows.map((x) => `<div class="card req ${x.priority === 'CANCELADA' ? 'dim' : ''}"><div class="between"><div class="row" style="flex:none;gap:12px">${chip(x.blood, x.priority === 'CRÍTICA' ? 'red' : '')}<div><b>${esc(shortName(x.patient))} • ${esc(x.hc)}</b><br><small class="mut">${esc(x.bed)}</small></div></div>${badge(x.label, x.color)}</div><hr><div class="between"><div><small class="lbl">HEMOCOMPONENTE</small><br>${esc(x.component)} • ${x.units} unidad${x.units > 1 ? 'es' : ''}</div><div><small class="lbl">PRIORIDAD</small><br><b class="${x.priority === 'CRÍTICA' ? 'redtxt' : ''}">${x.priority}</b></div><div class="right"><small class="lbl">${esc(x.id)}</small><br>${x.scheduled ? `Hoy • ${hhmm(x.at)}` : ago(x.at)}</div></div><div class="row" style="margin-top:12px">${!['cancelada', 'cerrada'].includes(x.stage) ? `<button class="btn sm" data-act="focusRadar" data-id="${x.id}">Monitorear en Radar</button>` : ''}${btn('Ver detalle completo', { go: `m/detail?id=${x.id}`, v: 'ghost', cls: 'sm' })}</div></div>`).join('')
         : emptyState({
             iconName: 'clipboard',
             title: f === 'crit' ? 'Sin solicitudes críticas activas' : 'Sin solicitudes activas en la guardia',
@@ -810,7 +875,14 @@ export const overrides = {
       const items = getInventory(invFilter);
       const hasActiveFilters = !!(invFilter.search || (invFilter.blood && invFilter.blood !== 'Todos') || (invFilter.component && invFilter.component !== 'Todos') || (invFilter.status && invFilter.status !== 'Todos'));
 
-      return `<div class="between"><div><h1>Banco de Sangre Central</h1><p class="mut">Panel de Control e Inventario de Cámaras Frigoríficas</p></div><small class="mut">${date()}</small></div><div class="grid kpi" style="margin:16px 0">${[['Unidades totales', totalUnits, '▲ +12 hoy', 'ok'], ['Solicitudes pendientes', 5, 'En espera', 'warn'], ['Alertas críticas', stockNow().filter(([, , st]) => st === 'CRÍTICO').length, 'CRÍTICO', 'red'], ['Donaciones hoy', get().appts.filter((a) => a.state === 'Completada').length + 16, 'Meta: 25', '']].map(([l, n, b, c]) => card(`<small class="mut">${l}</small><h1>${n}</h1>${badge(b, c)}`)).join('')}</div><div class="split"><div>${card(`<div class="between"><div><h3>Matriz de Stock — Cámaras Frigoríficas</h3><small class="mut">Monitor de temperatura y reservas por grupo</small></div>${badge('• Tiempo real', 'ok')}</div>${table(['Grupo', 'Bolsas disponibles', 'Estado', 'Actualización'], stockNow().map(([g, n, s], i) => `<tr><td>${chip(g, s === 'CRÍTICO' ? 'red' : '')}</td><td><b>${n} bolsas</b></td><td>${badge(s, level[s])}</td><td class="mut">${ago(seedAt() - (i + 1) * 3600000)}</td></tr>`))}`)}${card(`<div class="between"><div><h3>Lanzar Convocatoria a Donantes</h3><small class="mut">${get().campaign ? `Campaña activa • ${get().campaign.blood.join(', ')} • ${get().campaign.notified} donantes notificados` : 'Alerta push a donantes del grupo en escasez'}</small></div>${get().campaign ? '<button class="btn ghost sm" data-act="endCampaign">Finalizar campaña</button>' : '<button class="btn sm" data-act="startCampaign">Iniciar Campaña de Alerta</button>'}</div>`)}</div><div>${card(`<h3>Solicitudes Entrantes</h3><div class="stack" style="margin-top:10px">${(() => { const r = get().req; if (!r || ['cancelada', 'cerrada'].includes(r.status)) return ''; const lab = { buscando: [r.lastDenied ? 'BUSCANDO OTRO DONANTE' : 'BUSCANDO', 'red'], esperando: ['DONANTE ACEPTÓ', 'warn'], programada: ['CITA PROGRAMADA', 'warn'], completada: ['DONACIÓN COMPLETA', 'ok'] }[r.status] || ['EN CURSO', '']; return `<div class="inc"><span class="badge ${lab[1]}">${lab[0]}</span><b>${esc(r.hospital)} • ${esc(r.id)}</b><small>${r.units} u. ${esc(r.blood)} • ${esc(r.component)} • ${esc(r.area)}</small>${r.donor ? `<small class="mut">Donante: ${esc(shortName(r.donor.name))}${r.appt ? ' • cita ' + esc(r.appt.time) : ''}</small>` : ''}${r.lastDenied && r.status === 'buscando' ? `<small class="mut">Donante no apto: ${esc(r.lastDenied.name)} (${esc(r.lastDenied.reasons.map(reasonLabel).join('; '))}). Se está buscando otro donante.</small>` : ''}${r.patient ? `<small class="mut">Paciente: ${esc(r.patient)} • ${esc(r.hc || '')} • ${esc(r.bed || '')}</small>` : ''}${r.status === 'completada' && r.delivery === 'preparando' ? `<div class="row"><button class="btn sm" data-act="dispatch">Despachar unidad</button></div>` : r.delivery ? `<small class="mut">Traslado: ${DELIVERY[r.delivery]}${r.assignedTo ? ' • ' + esc(r.assignedTo) : ''}</small>` : ''}</div>`; })()}${(() => { const r = RESERVABLE[0], held = (get().reserved || []).includes(r.id); return `<div class="inc"><span class="badge ${held ? 'ok' : 'red'}">${held ? 'RESERVADA' : 'URGENTE'}</span><b>${r.hospital}</b><small>Reclama: ${r.units} unidades ${r.blood} (${r.reason})</small><div class="row">${held ? `<button class="btn ghost sm" data-act="releaseReq" data-id="${r.id}">Liberar reserva</button>` : `<button class="btn sm" data-act="reserveReq" data-id="${r.id}">Aceptar y Preparar</button>`}<button class="btn ghost sm" data-act="detailReq" data-id="${r.id}">Ver Detalles</button></div></div>`; })()}<div class="inc"><span class="badge warn">En revisión</span><b>Hospital Central del Valle</b><small>Necesita: 2 unidades A+</small></div><div class="inc"><span class="badge">Programada</span><b>Clínica Santa María</b><small>Necesita: 6 unidades B+</small></div></div>`)}</div></div>
+      return `<div class="between"><div><h1>Banco de Sangre Central</h1><p class="mut">Panel de Control e Inventario de Cámaras Frigoríficas</p></div><small class="mut">${date()}</small></div><div class="grid kpi" style="margin:16px 0">${[['Unidades totales', totalUnits, '▲ +12 hoy', 'ok'], ['Solicitudes pendientes', 5, 'En espera', 'warn'], ['Alertas críticas', stockNow().filter(([, , st]) => st === 'CRÍTICO').length, 'CRÍTICO', 'red'], ['Donaciones hoy', get().appts.filter((a) => a.state === 'Completada').length + 16, 'Meta: 25', '']].map(([l, n, b, c]) => card(`<small class="mut">${l}</small><h1>${n}</h1>${badge(b, c)}`)).join('')}</div><div class="split"><div>${card(`<div class="between"><div><h3>Matriz de Stock — Cámaras Frigoríficas</h3><small class="mut">Monitor de temperatura y reservas por grupo</small></div>${badge('• Tiempo real', 'ok')}</div>${table(['Grupo', 'Bolsas disponibles', 'Estado', 'Actualización'], stockNow().map(([g, n, s], i) => `<tr><td>${chip(g, s === 'CRÍTICO' ? 'red' : '')}</td><td><b>${n} bolsas</b></td><td>${badge(s, level[s])}</td><td class="mut">${ago(seedAt() - (i + 1) * 3600000)}</td></tr>`))}`)}${card(`<div class="between"><div><h3>Lanzar Convocatoria a Donantes</h3><small class="mut">${get().campaign ? `Campaña activa • ${get().campaign.blood.join(', ')} • ${get().campaign.notified} donantes notificados` : 'Alerta push a donantes del grupo en escasez'}</small></div>${get().campaign ? '<button class="btn ghost sm" data-act="endCampaign">Finalizar campaña</button>' : '<button class="btn sm" data-act="startCampaign">Iniciar Campaña de Alerta</button>'}</div>`)}</div><div>${card(`<h3>Solicitudes Entrantes</h3><div class="stack" style="margin-top:10px">${(() => {
+  const activeReqs = (get().requests || [get().req].filter(Boolean)).filter((r) => !['cancelada', 'cerrada'].includes(r.status));
+  if (!activeReqs.length) return '<p class="mut center" style="padding:10px 0">Sin solicitudes de emergencia activas.</p>';
+  return activeReqs.map((r) => {
+    const lab = { buscando: [r.lastDenied ? 'BUSCANDO OTRO DONANTE' : 'BUSCANDO', 'red'], esperando: ['DONANTE ACEPTÓ', 'warn'], programada: ['CITA PROGRAMADA', 'warn'], completada: ['DONACIÓN COMPLETA', 'ok'] }[r.status] || ['EN CURSO', ''];
+    return `<div class="inc"><div class="between"><span class="badge ${lab[1]}">${lab[0]}</span>${chip(r.blood, r.priority === 'CRÍTICA' ? 'red' : '')}</div><b>${esc(r.hospital || 'Hospital General')} • ${esc(r.id)}</b><small>${r.units} u. ${esc(r.blood)} • ${esc(r.component || '')} • ${esc(r.area || '')}</small>${r.donor ? `<small class="mut">Donante: ${esc(shortName(r.donor.name))}${r.appt ? ' • cita ' + esc(r.appt.time) : ''}</small>` : ''}${r.lastDenied && r.status === 'buscando' ? `<small class="mut">Donante no apto: ${esc(r.lastDenied.name)} (${esc(r.lastDenied.reasons.map(reasonLabel).join('; '))}). Se está buscando otro donante.</small>` : ''}${r.patient ? `<small class="mut">Paciente: ${esc(r.patient)} • ${esc(r.hc || '')} • ${esc(r.bed || '')}</small>` : ''}${r.status === 'completada' && r.delivery === 'preparando' ? `<div class="row" style="margin-top:6px"><button class="btn sm" data-act="dispatch" data-id="${r.id}">Despachar unidad</button></div>` : r.delivery ? `<small class="mut">Traslado: ${DELIVERY[r.delivery]}${r.assignedTo ? ' • ' + esc(r.assignedTo) : ''}</small>` : ''}</div>`;
+  }).join('');
+})()}${(() => { const r = RESERVABLE[0], held = (get().reserved || []).includes(r.id); return `<div class="inc"><span class="badge ${held ? 'ok' : 'red'}">${held ? 'RESERVADA' : 'URGENTE'}</span><b>${r.hospital}</b><small>Reclama: ${r.units} unidades ${r.blood} (${r.reason})</small><div class="row">${held ? `<button class="btn ghost sm" data-act="releaseReq" data-id="${r.id}">Liberar reserva</button>` : `<button class="btn sm" data-act="reserveReq" data-id="${r.id}">Aceptar y Preparar</button>`}<button class="btn ghost sm" data-act="detailReq" data-id="${r.id}">Ver Detalles</button></div></div>`; })()}<div class="inc"><span class="badge warn">En revisión</span><b>Hospital Central del Valle</b><small>Necesita: 2 unidades A+</small></div><div class="inc"><span class="badge">Programada</span><b>Clínica Santa María</b><small>Necesita: 6 unidades B+</small></div></div>`)}</div></div>
 <div class="card full" id="secInventory" role="region" aria-label="Gestión de inventario de unidades y caducidades" style="margin-top:20px">
   <div class="between" style="flex-wrap:wrap;gap:12px;margin-bottom:14px">
     <div>

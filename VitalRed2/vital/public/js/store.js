@@ -33,6 +33,18 @@ export const seedInventory = () => {
   ];
 };
 
+export const seedReqs = () => {
+  const now = Date.now();
+  const m = (x) => now + x * 60000;
+  return [
+    { id: 'ST-2048', blood: 'O-', patient: 'Lucía Martínez Reyes', hc: 'HC 482901', bed: 'Quirófano 2', area: 'Quirófano', label: 'En búsqueda', color: 'warn', units: 2, component: 'Concentrado de hematíes', priority: 'CRÍTICA', diagnosis: 'Hemorragia intraoperatoria', status: 'buscando', at: m(-4), requester: 'Dra. Ana Torres', hospital: 'Hospital General', createdAt: new Date(m(-4)).toISOString(), notified: 6, live: true },
+    { id: 'ST-2046', blood: 'AB+', patient: 'Carlos Pérez Luna', hc: 'HC 391774', bed: 'Box Urgencias 08', area: 'Urgencias', label: 'Confirmación de unidad', color: 'ok', units: 3, component: 'Plasma fresco congelado', priority: 'ALTA', diagnosis: 'Coagulopatía', status: 'completada', delivery: 'entregada', donor: { name: 'Daniel R.', blood: 'AB+' }, at: m(-95), requester: 'Dr. Mario Fuentes', hospital: 'Hospital General', createdAt: new Date(m(-95)).toISOString(), notified: 2, live: true },
+    { id: 'ST-2042', blood: 'A+', patient: 'Elena Ramírez Soto', hc: 'HC 520118', bed: 'Quirófano 4', area: 'Quirófano', label: 'Programada', color: '', units: 1, component: 'Plaquetas por aféresis', priority: 'PROGRAMADA', diagnosis: 'Cirugía programada', status: 'programada', donor: { name: 'Sofía M.', blood: 'A+' }, at: m(90), scheduled: true, requester: 'Dra. Lucía Vera', hospital: 'Hospital General', createdAt: new Date(m(90)).toISOString(), notified: 5, live: true },
+    { id: 'ST-2039', blood: 'B-', patient: 'Miguel Ángel Salas', hc: 'HC 278430', bed: 'Shock room', area: 'Urgencias', label: 'Sin respuesta', color: 'red', units: 4, component: 'Concentrado de hematíes', priority: 'CRÍTICA', diagnosis: 'Politraumatismo', status: 'sinrespuesta', at: m(-28), requester: 'Dr. Mario Fuentes', hospital: 'Hospital General', createdAt: new Date(m(-28)).toISOString(), notified: 1, live: true },
+    { id: 'ST-2035', blood: 'A-', patient: 'Ana Sofía Vega', hc: 'HC 440821', bed: 'Observación 3', area: 'Urgencias', label: 'Cancelada', color: '', units: 2, component: 'Plasma fresco congelado', priority: 'CANCELADA', diagnosis: 'Observación', status: 'cancelada', at: m(-150), requester: 'Dra. Ana Torres', hospital: 'Hospital General', createdAt: new Date(m(-150)).toISOString(), notified: 4, live: true }
+  ];
+};
+
 const seed = () => ({
   theme: matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light',
   session: null,
@@ -42,6 +54,8 @@ const seed = () => ({
     { name: 'Luis Pérez', email: 'transporte@vitalred.org', password: 'Transp123', role: 'transport', hospital: 'Banco Central', unit: 'AMB-014', license: 'LIC-458213' },
     { name: 'Mtra. Sofía Ruiz', email: 'banco@vitalred.org', password: 'Banco123', role: 'bank', hospital: 'Banco Central' },
   ],
+  requests: seedReqs(),
+  activeReqId: 'ST-2048',
   req: null, reg: null, triageAns: null, triage: null, temp: 4.2, signed: false,
   notifications: seedNotifs(),
   appts: [
@@ -62,6 +76,21 @@ try {
 }
 
 try {
+  if (!Array.isArray(state.requests) || !state.requests.length) {
+    state.requests = seedReqs();
+    if (state.req && state.req.id) {
+      state.requests = [state.req, ...state.requests.filter((r) => r.id !== state.req.id)];
+    }
+    state.activeReqId = state.req?.id || 'ST-2048';
+    localStorage.setItem(KEY, JSON.stringify(state));
+  }
+  if (!state.activeReqId && state.requests.length) {
+    state.activeReqId = state.requests[0].id;
+  }
+  if (!state.req) {
+    state.req = state.requests.find((r) => r.id === state.activeReqId) || state.requests[0] || null;
+  }
+
   if (!Array.isArray(state.notifications)) {
     state.notifications = seedNotifs();
     localStorage.setItem(KEY, JSON.stringify(state));
@@ -97,7 +126,23 @@ export const set = (patch) => {
       if (session) sessionStorage.setItem(SESSION, session); else sessionStorage.removeItem(SESSION);
     } catch {}
   }
+  if ('req' in rest && rest.req && rest.req.id) {
+    const curReq = rest.req;
+    const existing = (state.requests || []).filter((r) => r.id !== curReq.id);
+    state.requests = [curReq, ...existing];
+    state.activeReqId = curReq.id;
+  }
+  if ('requests' in rest && Array.isArray(rest.requests)) {
+    state.requests = rest.requests;
+    if (!state.activeReqId && state.requests.length) {
+      state.activeReqId = state.requests[0].id;
+    }
+    state.req = state.requests.find((r) => r.id === state.activeReqId) || state.requests[0] || null;
+  }
   Object.assign(state, rest);
+  if (!state.req && Array.isArray(state.requests) && state.requests.length) {
+    state.req = state.requests.find((r) => r.id === state.activeReqId) || state.requests[0];
+  }
   state.session = null;
   try {
     localStorage.setItem(KEY, JSON.stringify(state));
