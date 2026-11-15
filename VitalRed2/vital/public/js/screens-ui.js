@@ -1,5 +1,5 @@
-import { get, set, currentUser, HOME, getInventory, checkExpirations, getUnitExpirationInfo, addInventoryItem, updateInventoryItem, removeInventoryItem } from './store.js';
-import { btn, card, badge, field, toggle, stepper, qrPattern, icon, statusScreen, esc, confirmModal, toast, emptyState, loadingState } from './ui.js';
+import { get, set, currentUser, HOME, ROLES, getInventory, checkExpirations, getUnitExpirationInfo, addInventoryItem, updateInventoryItem, removeInventoryItem, updateUserProfile, resetUserPassword } from './store.js';
+import { btn, card, badge, field, toggle, stepper, qrPattern, icon, statusScreen, esc, confirmModal, toast, emptyState, loadingState, PW_RULES, passwordIssues, pwRules, bindPwRules } from './ui.js';
 import { fleetUnits, fleetMount, BANK } from './maps.js';
 import { activeReq, historyOf, fmtDate, nextEligible, compatible, shortName, statusOf, deferred, reasonLabel, REASONS, CHECKS, reviewsAll, eligibleDonors, hhmm, ago, seedAt, fmtDateTime, SHELF_LIFE_DAYS, RECOMMENDED_VOLUMES, CHAMBER_LOCATIONS, calculateExpirationDate } from './domain.js';
 import { donorStage, STAGE_HOME } from './flow.js';
@@ -481,6 +481,9 @@ export const overrides = {
         <form data-form="login" class="stack" novalidate>
           ${field('email', 'Correo o cédula profesional', 'text', 'usuario@vitalred.org')}
           ${field('password', 'Contraseña', 'password', '••••••••')}
+          <div style="text-align:right;margin-top:-6px">
+            <button type="button" class="btn-link" data-act="openRecoverModal" style="min-height:44px;min-width:44px">¿Olvidaste tu contraseña?</button>
+          </div>
           ${btn('<span class="spin"></span>Ingresar', { type: 'submit' })}
         </form>
         <p class="center mut" style="margin-top:14px">¿Eres donante nuevo? <a href="#/register">Regístrate</a> • <a href="#/register?inst=1">Registro institucional</a></p>
@@ -817,7 +820,45 @@ export const overrides = {
 
   'd/profile': {
     role: 'donor',
-    render: () => { const u = currentUser(), ini = u.name.split(' ').map((w) => w[0]).slice(0, 2).join(''); return `<h2 class="ptitle">Mi Perfil</h2>${card(`<div class="between" style="justify-content:flex-start;gap:16px"><div class="ring">${ini}</div><div><h2>${u.name}</h2>${chip('Tipo: ' + (u.blood || 'O+'), 'red')}</div></div>`)}<div class="banner ${statusOf(u).startsWith('Apto') ? 'ok' : 'warn'}"><b>• ${statusOf(u)}</b><p>${statusOf(u).startsWith('Apto') ? 'Tu pre-triaje está vigente. Puedes responder a alertas de emergencia.' : 'Tu registro requiere revisión médica.'}</p></div>${btn('Actualizar datos médicos', { go: 'd/medical', v: 'ghost' })}<div class="grid two" style="margin-top:12px"><div class="stat"><b style="color:var(--red-text)">${historyOf(u).length}</b><small>Donaciones</small></div><div class="stat"><b style="color:var(--ok-text)">${historyOf(u).length * 3}</b><small>Vidas ayudadas</small></div></div><div style="margin-top:12px">${btn('Ver historial de donaciones', { go: 'd/history', v: 'ghost' })}</div>`; },
+    render: () => {
+      const u = currentUser(), ini = u.name.split(' ').map((w) => w[0]).slice(0, 2).join('');
+      return `<h2 class="ptitle">Mi Perfil</h2>
+      ${card(`
+        <div class="between" style="justify-content:flex-start;gap:16px">
+          <div class="ring">${ini}</div>
+          <div style="flex:1">
+            <div class="between">
+              <h2>${esc(u.name)}</h2>
+              <button class="btn ghost sm" data-act="openEditProfileModal" type="button" style="min-height:44px;min-width:44px">Editar perfil</button>
+            </div>
+            <div style="display:flex;gap:8px;align-items:center;margin-top:4px">
+              ${chip('Tipo: ' + (u.blood || 'O+'), 'red')}
+              <span class="mut" style="font-size:13px">${esc(u.city || 'Ciudad de México')}</span>
+            </div>
+          </div>
+        </div>
+      `)}
+      <div class="banner ${statusOf(u).startsWith('Apto') ? 'ok' : 'warn'}">
+        <b>• ${statusOf(u)}</b>
+        <p>${statusOf(u).startsWith('Apto') ? 'Tu pre-triaje está vigente. Puedes responder a alertas de emergencia.' : 'Tu registro requiere revisión médica.'}</p>
+      </div>
+      ${card(`
+        <div class="between" style="margin-bottom:8px">
+          <h3>Datos de contacto y cuenta</h3>
+          <button class="btn ghost sm" data-act="openEditProfileModal" type="button" style="min-height:44px;min-width:44px">Editar</button>
+        </div>
+        <div class="item"><span class="mut">Correo</span><b>${esc(u.email)}</b></div>
+        <div class="item"><span class="mut">Teléfono</span><b>${esc(u.phone || '55-2345-6789')}</b></div>
+        <div class="item"><span class="mut">Ciudad</span><b>${esc(u.city || 'Ciudad de México')}</b></div>
+        <div class="item"><span class="mut">Grupo sanguíneo</span><b>${esc(u.blood || 'O+')}</b></div>
+      `)}
+      ${btn('Actualizar datos médicos', { go: 'd/medical', v: 'ghost' })}
+      <div class="grid two" style="margin-top:12px">
+        <div class="stat"><b style="color:var(--red-text)">${historyOf(u).length}</b><small>Donaciones</small></div>
+        <div class="stat"><b style="color:var(--ok-text)">${historyOf(u).length * 3}</b><small>Vidas ayudadas</small></div>
+      </div>
+      <div style="margin-top:12px">${btn('Ver historial de donaciones', { go: 'd/history', v: 'ghost' })}</div>`;
+    },
   },
 
   'd/alert': {
@@ -989,3 +1030,673 @@ export const overrides = {
     render: () => `<h1>Reportes — Historial de Trazabilidad</h1><p class="mut" style="margin-bottom:16px">Trazabilidad legal y médica de cada unidad procesada</p><div class="split rev">${card(`<h3>Registros de Trazabilidad Activa</h3>${table(['ID Bolsa', 'Grupo', 'Extracción', 'Pruebas (VIH/HEP/SIF)', 'Hospital destino', 'Firma digital'], [['#B-91024', 'O+', '12 Ene 2026', 'Hosp. San Rafael', 'Dr. Torres'], ['#B-91025', 'A-', '12 Ene 2026', 'Clín. Santa María', 'Dra. Okonkwo'], ['#B-91028', 'B+', '13 Ene 2026', 'Hosp. del Valle', 'Dr. Torres'], ['#B-91030', 'O-', '13 Ene 2026', 'Hosp. San Rafael', 'Dra. Okonkwo'], ['#B-91032', 'AB+', '14 Ene 2026', 'Hosp. Ángeles', 'Dr. Torres'], ['#B-91039', 'O+', '14 Ene 2026', 'Hosp. Regional', 'Dr. Torres']].map(([i, g, d, h, f]) => `<tr><td class="redtxt"><b>${i}</b></td><td><b>${g}</b></td><td>${d}</td><td>${badge('NEGATIVO ✓', 'ok')}</td><td>${h}</td><td>✍ ${f}</td></tr>`), 'h3 h6')}<div class="between" style="margin-top:12px"><small class="mut">Normativa: NOM-253-SSA1-2012</small><div class="row" style="flex:none"><button class="btn sm" data-act="exportPdf">Exportar PDF</button><button class="btn ghost sm" data-act="exportCsv">Exportar CSV</button></div></div>`)}${card(`<h3>Resumen de Periodo</h3><div class="stack" style="margin-top:10px">${[['BOLSAS PROCESADAS', '248 unidades', ''], ['TASA DE DESCARTE', '2.4%', 'redtxt'], ['HOSPITALES ATENDIDOS', '14 centros', ''], ['PROMEDIO DE ENTREGA', '28 minutos', 'oktxt']].map(([l, v, c]) => `<div class="stat left"><small class="lbl">${l}</small><h2 class="${c}">${v}</h2></div>`).join('')}</div>`)}</div>`,
   },
 };
+
+export function openPasswordRecoveryModal(options = {}) {
+  const prev = document.activeElement;
+  const m = document.createElement('div');
+  m.className = 'modal';
+  m.setAttribute('role', 'dialog');
+  m.setAttribute('aria-modal', 'true');
+  m.setAttribute('aria-labelledby', 'modalRecoverTitle');
+
+  let step = 1;
+  let targetUser = null;
+  let simCode = '';
+  let pwCleanup = null;
+
+  function close() {
+    if (pwCleanup) { pwCleanup(); pwCleanup = null; }
+    document.removeEventListener('keydown', onKey, true);
+    m.remove();
+    if (prev && prev.isConnected) prev.focus();
+  }
+
+  const onKey = (e) => {
+    if (e.key === 'Escape') { e.stopPropagation(); close(); return; }
+    if (e.key !== 'Tab') return;
+    const focusable = [...m.querySelectorAll('input:not([type="hidden"]),button,select,textarea,[tabindex="0"]')].filter(
+      (el) => !el.disabled && el.offsetParent !== null
+    );
+    if (!focusable.length) return;
+    const first = focusable[0], last = focusable[focusable.length - 1];
+    if (e.shiftKey && document.activeElement === first) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && document.activeElement === last) {
+      e.preventDefault();
+      first.focus();
+    }
+  };
+
+  m.addEventListener('click', (e) => {
+    if (e.target === m || e.target.closest('[data-x]')) {
+      close();
+    }
+  });
+
+  document.addEventListener('keydown', onKey, true);
+
+  function render() {
+    if (pwCleanup) { pwCleanup(); pwCleanup = null; }
+
+    if (step === 1) {
+      const defaultEmail = options.prefillEmail || document.getElementById('email')?.value.trim() || '';
+      m.innerHTML = `
+        <div class="card modal-recover">
+          <div class="between" style="margin-bottom:14px">
+            <div>
+              <h2 id="modalRecoverTitle" style="font-size:20px;color:var(--txt)">Recuperar contraseña</h2>
+              <small class="mut">Paso 1 de 3: Identificación de cuenta</small>
+            </div>
+            <button class="btn ghost sm" data-x aria-label="Cerrar modal" style="min-width:44px;min-height:44px">${icon('x', 18)}</button>
+          </div>
+          <form id="formRecover1" class="stack" novalidate>
+            <p class="mut" style="font-size:14px;line-height:1.4">
+              Ingresa el correo electrónico institucional o personal asociado a tu cuenta de VitalRed para verificar tu identidad.
+            </p>
+            <label class="field">
+              <span>Correo o Cédula profesional *</span>
+              <input type="text" id="recEmail" name="email" value="${esc(defaultEmail)}" required placeholder="ejemplo@vitalred.org" autocomplete="email" style="min-height:48px">
+              <small class="err" id="recEmail-err" role="alert" aria-live="polite"></small>
+            </label>
+            <div class="banner info" style="font-size:12px;margin:4px 0 10px;line-height:1.4">
+              <b>Cuentas de prueba:</b> Puedes utilizar <code>donante@vitalred.org</code>, <code>medico@vitalred.org</code>, <code>transporte@vitalred.org</code> o <code>banco@vitalred.org</code>.
+            </div>
+            <div class="row" style="margin-top:14px">
+              <button type="button" class="btn ghost" data-x style="min-height:44px">Cancelar</button>
+              <button type="submit" class="btn primary" id="btnRecSubmit1" style="min-height:44px">Enviar código</button>
+            </div>
+          </form>
+        </div>
+      `;
+
+      const form = m.querySelector('#formRecover1');
+      const input = m.querySelector('#recEmail');
+      const err = m.querySelector('#recEmail-err');
+
+      form.addEventListener('submit', (e) => {
+        e.preventDefault();
+        err.textContent = '';
+        input.classList.remove('bad');
+        const val = input.value.trim().toLowerCase();
+        if (!val) {
+          input.classList.add('bad');
+          err.textContent = 'Por favor ingresa tu correo electrónico o cédula.';
+          input.focus();
+          return;
+        }
+
+        const users = get().users || [];
+        const found = users.find((u) => {
+          const uEmail = (u.email || '').trim().toLowerCase();
+          const uCed = (u.cedula || '').trim().toLowerCase();
+          return uEmail === val || uCed === val;
+        });
+
+        if (!found) {
+          input.classList.add('bad');
+          err.textContent = 'No se encontró ninguna cuenta registrada con este correo o cédula.';
+          input.focus();
+          return;
+        }
+
+        targetUser = found;
+        simCode = String(Math.floor(100000 + Math.random() * 900000));
+        toast(`Código de verificación enviado: ${simCode}`, 'ok');
+        step = 2;
+        render();
+      });
+
+      setTimeout(() => input.focus(), 50);
+    } else if (step === 2) {
+      m.innerHTML = `
+        <div class="card modal-recover">
+          <div class="between" style="margin-bottom:14px">
+            <div>
+              <h2 id="modalRecoverTitle" style="font-size:20px;color:var(--txt)">Verificar código</h2>
+              <small class="mut">Paso 2 de 3: Código de seguridad temporal</small>
+            </div>
+            <button class="btn ghost sm" data-x aria-label="Cerrar modal" style="min-width:44px;min-height:44px">${icon('x', 18)}</button>
+          </div>
+          <form id="formRecover2" class="stack" novalidate>
+            <p class="mut" style="font-size:14px">
+              Ingresa el código de 6 dígitos enviado para <b>${esc(targetUser.name)}</b> (<code>${esc(targetUser.email)}</code>).
+            </p>
+            <div class="banner info" role="region" aria-label="Código de demostración" style="border-left:4px solid var(--blue);background:color-mix(in srgb,var(--blue) 12%,var(--card));padding:12px;border-radius:8px">
+              <div style="font-size:12px;font-weight:700;color:var(--blue-text);margin-bottom:4px">CÓDIGO DE SEGURIDAD SIMULADO</div>
+              <div style="font-size:22px;letter-spacing:4px;font-family:monospace;font-weight:800;color:var(--txt)">${simCode}</div>
+              <small class="mut" style="display:block;margin-top:4px">En este prototipo simulado, el código temporal de un solo uso se genera aquí.</small>
+            </div>
+            <label class="field">
+              <span>Código de 6 dígitos *</span>
+              <input type="text" id="recCode" name="code" required maxlength="6" pattern="[0-9]{6}" placeholder="${simCode}" autocomplete="one-time-code" style="min-height:48px;font-size:20px;letter-spacing:4px;text-align:center">
+              <small class="err" id="recCode-err" role="alert" aria-live="polite"></small>
+            </label>
+            <div class="between" style="margin-top:6px">
+              <button type="button" class="btn-link" id="btnResendCode" style="min-height:44px;min-width:44px;padding:0">
+                Reenviar código
+              </button>
+              <button type="button" class="btn-link" id="btnBackStep1" style="min-height:44px;min-width:44px;padding:0">
+                Cambiar correo
+              </button>
+            </div>
+            <div class="row" style="margin-top:14px">
+              <button type="button" class="btn ghost" data-x style="min-height:44px">Cancelar</button>
+              <button type="submit" class="btn primary" id="btnRecSubmit2" style="min-height:44px">Validar código</button>
+            </div>
+          </form>
+        </div>
+      `;
+
+      const form = m.querySelector('#formRecover2');
+      const input = m.querySelector('#recCode');
+      const err = m.querySelector('#recCode-err');
+
+      m.querySelector('#btnResendCode').addEventListener('click', () => {
+        simCode = String(Math.floor(100000 + Math.random() * 900000));
+        toast(`Nuevo código de verificación: ${simCode}`, 'ok');
+        render();
+      });
+
+      m.querySelector('#btnBackStep1').addEventListener('click', () => {
+        step = 1;
+        render();
+      });
+
+      form.addEventListener('submit', (e) => {
+        e.preventDefault();
+        err.textContent = '';
+        input.classList.remove('bad');
+        const codeVal = input.value.trim();
+        if (codeVal !== simCode) {
+          input.classList.add('bad');
+          err.textContent = `Código inválido. Introduce el código de 6 dígitos (${simCode}).`;
+          input.focus();
+          return;
+        }
+        step = 3;
+        render();
+      });
+
+      setTimeout(() => input.focus(), 50);
+    } else if (step === 3) {
+      m.innerHTML = `
+        <div class="card modal-recover">
+          <div class="between" style="margin-bottom:14px">
+            <div>
+              <h2 id="modalRecoverTitle" style="font-size:20px;color:var(--txt)">Nueva contraseña</h2>
+              <small class="mut">Paso 3 de 3: Requisitos de seguridad</small>
+            </div>
+            <button class="btn ghost sm" data-x aria-label="Cerrar modal" style="min-width:44px;min-height:44px">${icon('x', 18)}</button>
+          </div>
+          <form id="formRecover3" class="stack" novalidate>
+            <p class="mut" style="font-size:14px">
+              Define una nueva contraseña segura para la cuenta <b>${esc(targetUser.email)}</b>.
+            </p>
+            <label class="field" style="position:relative">
+              <span>Nueva contraseña *</span>
+              <div style="position:relative">
+                <input type="password" id="password" name="password" required autocomplete="new-password" placeholder="••••••••" style="min-height:48px;padding-right:48px">
+                <button type="button" class="eye" id="togglePw1" aria-label="Mostrar u ocultar contraseña" style="min-height:44px;min-width:44px">
+                  ${icon('eye', 20)}
+                </button>
+              </div>
+              <small class="err" id="password-err" role="alert" aria-live="polite"></small>
+            </label>
+            ${pwRules()}
+            <label class="field" style="position:relative">
+              <span>Confirmar nueva contraseña *</span>
+              <div style="position:relative">
+                <input type="password" id="confirmPassword" name="confirmPassword" required autocomplete="new-password" placeholder="••••••••" style="min-height:48px;padding-right:48px">
+                <button type="button" class="eye" id="togglePw2" aria-label="Mostrar u ocultar confirmación de contraseña" style="min-height:44px;min-width:44px">
+                  ${icon('eye', 20)}
+                </button>
+              </div>
+              <small class="err" id="confirmPassword-err" role="alert" aria-live="polite"></small>
+            </label>
+            <div class="row" style="margin-top:14px">
+              <button type="button" class="btn ghost" data-x style="min-height:44px">Cancelar</button>
+              <button type="submit" class="btn primary" id="btnRecSubmit3" style="min-height:44px">Guardar contraseña</button>
+            </div>
+          </form>
+        </div>
+      `;
+
+      pwCleanup = bindPwRules(m);
+
+      const form = m.querySelector('#formRecover3');
+      const pwInput = m.querySelector('#password');
+      const confInput = m.querySelector('#confirmPassword');
+      const pwErr = m.querySelector('#password-err');
+      const confErr = m.querySelector('#confirmPassword-err');
+
+      const setupToggle = (btnEl, inpEl) => {
+        btnEl.addEventListener('click', () => {
+          const isPw = inpEl.type === 'password';
+          inpEl.type = isPw ? 'text' : 'password';
+          btnEl.innerHTML = icon(isPw ? 'eyeoff' : 'eye', 20);
+        });
+      };
+      setupToggle(m.querySelector('#togglePw1'), pwInput);
+      setupToggle(m.querySelector('#togglePw2'), confInput);
+
+      form.addEventListener('submit', (e) => {
+        e.preventDefault();
+        pwErr.textContent = '';
+        confErr.textContent = '';
+        pwInput.classList.remove('bad');
+        confInput.classList.remove('bad');
+
+        const newPass = pwInput.value;
+        const confirmPass = confInput.value;
+
+        const issues = passwordIssues(newPass);
+        if (issues.length > 0) {
+          pwInput.classList.add('bad');
+          pwErr.textContent = `La contraseña debe cumplir: ${issues.join(', ')}.`;
+          pwInput.focus();
+          return;
+        }
+
+        if (newPass !== confirmPass) {
+          confInput.classList.add('bad');
+          confErr.textContent = 'Las contraseñas no coinciden. Verifícalas.';
+          confInput.focus();
+          return;
+        }
+
+        const res = resetUserPassword(targetUser.email, newPass);
+        if (!res.ok) {
+          pwInput.classList.add('bad');
+          pwErr.textContent = res.error || 'Error al actualizar la contraseña.';
+          return;
+        }
+
+        step = 4;
+        render();
+      });
+
+      setTimeout(() => pwInput.focus(), 50);
+    } else if (step === 4) {
+      m.innerHTML = `
+        <div class="card modal-recover">
+          <div class="center" style="padding:12px 0">
+            <div style="width:56px;height:56px;border-radius:50%;background:color-mix(in srgb,var(--ok) 18%,transparent);color:var(--ok-text);display:grid;place-items:center;margin:0 auto 12px">
+              ${icon('check', 32)}
+            </div>
+            <h2 id="modalRecoverTitle" style="font-size:22px;color:var(--txt);margin-bottom:8px">¡Contraseña restablecida!</h2>
+            <p class="mut" style="font-size:14px;max-width:380px;margin:0 auto 16px;line-height:1.4">
+              La contraseña para <b>${esc(targetUser.email)}</b> ha sido actualizada exitosamente. Ya puedes iniciar sesión con tus nuevas credenciales.
+            </p>
+            <button type="button" class="btn primary" id="btnFinishRecover" style="min-height:48px">
+              Ir a Iniciar sesión
+            </button>
+          </div>
+        </div>
+      `;
+
+      const finishBtn = m.querySelector('#btnFinishRecover');
+      finishBtn.addEventListener('click', () => {
+        close();
+        const loginEmail = document.getElementById('email');
+        const loginPass = document.getElementById('password');
+        if (loginEmail) {
+          loginEmail.value = targetUser.email;
+          if (loginPass) {
+            loginPass.value = '';
+            setTimeout(() => loginPass.focus(), 50);
+          }
+        }
+        toast('Puedes ingresar con tu nueva contraseña', 'ok');
+      });
+
+      setTimeout(() => finishBtn.focus(), 50);
+    }
+  }
+
+  render();
+  document.body.append(m);
+}
+
+export function openEditProfileModal(user, onSave) {
+  if (!user) return;
+  const prev = document.activeElement;
+  const m = document.createElement('div');
+  m.className = 'modal';
+  m.setAttribute('role', 'dialog');
+  m.setAttribute('aria-modal', 'true');
+  m.setAttribute('aria-labelledby', 'modalProfileTitle');
+
+  function close() {
+    document.removeEventListener('keydown', onKey, true);
+    m.remove();
+    if (prev && prev.isConnected) prev.focus();
+  }
+
+  const onKey = (e) => {
+    if (e.key === 'Escape') { e.stopPropagation(); close(); return; }
+    if (e.key !== 'Tab') return;
+    const focusable = [...m.querySelectorAll('input:not([type="hidden"]),button,select,textarea,[tabindex="0"]')].filter(
+      (el) => !el.disabled && el.offsetParent !== null
+    );
+    if (!focusable.length) return;
+    const first = focusable[0], last = focusable[focusable.length - 1];
+    if (e.shiftKey && document.activeElement === first) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && document.activeElement === last) {
+      e.preventDefault();
+      first.focus();
+    }
+  };
+
+  m.addEventListener('click', (e) => {
+    if (e.target === m || e.target.closest('[data-x]')) {
+      close();
+    }
+  });
+
+  document.addEventListener('keydown', onKey, true);
+
+  const role = user.role || 'donor';
+  const roleName = ROLES[role] || 'Usuario';
+
+  let roleFieldsHtml = '';
+
+  if (role === 'medical') {
+    roleFieldsHtml = `
+      <label class="field field-readonly">
+        <span>Cédula profesional <span class="badge-ro">Validada institucionalmente</span></span>
+        <input type="text" value="${esc(user.cedula || 'CED-7765421')}" readonly aria-readonly="true" tabindex="-1">
+      </label>
+      <div class="row">
+        <label class="field" style="flex:1">
+          <span>Hospital de adscripción *</span>
+          <select id="profHospital" name="hospital" required>
+            ${['Hospital General', 'Hospital de Especialidades', 'Hospital Infantil', 'Clínica San Rafael', 'Banco Central'].map(
+              (h) => `<option value="${h}" ${h === (user.hospital || 'Hospital General') ? 'selected' : ''}>${h}</option>`
+            ).join('')}
+          </select>
+          <small class="err" id="profHospital-err" role="alert"></small>
+        </label>
+        <label class="field" style="flex:1">
+          <span>Turno de guardia *</span>
+          <select id="profShift" name="shift" required>
+            ${['Jornada Acumulada', 'Matutino', 'Vespertino', 'Nocturno A', 'Nocturno B'].map(
+              (s) => `<option value="${s}" ${s === (user.shift || 'Jornada Acumulada') ? 'selected' : ''}>${s}</option>`
+            ).join('')}
+          </select>
+          <small class="err" id="profShift-err" role="alert"></small>
+        </label>
+      </div>
+      <label class="field">
+        <span>Servicio / Especialidad *</span>
+        <input type="text" id="profService" name="service" value="${esc(user.service || 'Urgencias / Quirófano')}" required minlength="3" placeholder="Ej. Urgencias / Quirófano">
+        <small class="err" id="profService-err" role="alert"></small>
+      </label>
+      <div class="row">
+        <label class="field" style="flex:1">
+          <span>Teléfono de contacto *</span>
+          <input type="tel" id="profPhone" name="phone" value="${esc(user.phone || '55-4192-8830')}" required placeholder="55-1234-5678">
+          <small class="err" id="profPhone-err" role="alert"></small>
+        </label>
+        <label class="field" style="flex:1">
+          <span>Ciudad *</span>
+          <input type="text" id="profCity" name="city" value="${esc(user.city || 'Ciudad de México')}" required placeholder="Ciudad de México">
+          <small class="err" id="profCity-err" role="alert"></small>
+        </label>
+      </div>
+    `;
+  } else if (role === 'transport') {
+    roleFieldsHtml = `
+      <label class="field field-readonly">
+        <span>Licencia sanitaria / SCT <span class="badge-ro">Acreditación sanitaria oficial</span></span>
+        <input type="text" value="${esc(user.license || 'LIC-458213')}" readonly aria-readonly="true" tabindex="-1">
+      </label>
+      <div class="row">
+        <label class="field" style="flex:1">
+          <span>Unidad asignada *</span>
+          <input type="text" id="profUnit" name="unit" value="${esc(user.unit || 'AMB-014')}" required placeholder="AMB-014">
+          <small class="err" id="profUnit-err" role="alert"></small>
+        </label>
+        <label class="field" style="flex:1">
+          <span>Base operativa *</span>
+          <input type="text" id="profHospital" name="hospital" value="${esc(user.hospital || 'Banco Central')}" required placeholder="Banco Central">
+          <small class="err" id="profHospital-err" role="alert"></small>
+        </label>
+      </div>
+      <div class="row">
+        <label class="field" style="flex:1">
+          <span>Estado operativo</span>
+          <select id="profOpStatus" name="operatorStatus">
+            ${['En servicio', 'En descanso', 'Fuera de turno'].map(
+              (st) => `<option value="${st}" ${st === (user.operatorStatus || 'En servicio') ? 'selected' : ''}>${st}</option>`
+            ).join('')}
+          </select>
+        </label>
+        <label class="field" style="flex:1">
+          <span>Turno habitual</span>
+          <select id="profShift" name="shift">
+            ${['Matutino', 'Vespertino', 'Nocturno', '24x48'].map(
+              (s) => `<option value="${s}" ${s === (user.shift || 'Matutino') ? 'selected' : ''}>${s}</option>`
+            ).join('')}
+          </select>
+        </label>
+      </div>
+      <div class="row">
+        <label class="field" style="flex:1">
+          <span>Teléfono de cabina / radio *</span>
+          <input type="tel" id="profPhone" name="phone" value="${esc(user.phone || '55-8392-1044')}" required placeholder="55-8392-1044">
+          <small class="err" id="profPhone-err" role="alert"></small>
+        </label>
+        <label class="field" style="flex:1">
+          <span>Ciudad *</span>
+          <input type="text" id="profCity" name="city" value="${esc(user.city || 'Ciudad de México')}" required placeholder="Ciudad de México">
+          <small class="err" id="profCity-err" role="alert"></small>
+        </label>
+      </div>
+    `;
+  } else if (role === 'bank') {
+    roleFieldsHtml = `
+      <div class="row">
+        <label class="field" style="flex:1">
+          <span>Cargo o puesto institucional *</span>
+          <input type="text" id="profPosition" name="position" value="${esc(user.position || user.cargo || 'Dirección Médica')}" required placeholder="Dirección Médica">
+          <small class="err" id="profPosition-err" role="alert"></small>
+        </label>
+        <label class="field" style="flex:1">
+          <span>Institución / Banco *</span>
+          <input type="text" id="profHospital" name="hospital" value="${esc(user.hospital || 'Banco Central')}" required placeholder="Banco Central">
+          <small class="err" id="profHospital-err" role="alert"></small>
+        </label>
+      </div>
+      <div class="row">
+        <label class="field" style="flex:1">
+          <span>Turno operativo *</span>
+          <select id="profShift" name="shift" required>
+            ${['Matutino', 'Vespertino', 'Nocturno', 'Mixto'].map(
+              (s) => `<option value="${s}" ${s === (user.shift || 'Matutino') ? 'selected' : ''}>${s}</option>`
+            ).join('')}
+          </select>
+        </label>
+        <label class="field" style="flex:1">
+          <span>Teléfono directo *</span>
+          <input type="tel" id="profPhone" name="phone" value="${esc(user.phone || '55-6671-9200')}" required placeholder="55-6671-9200">
+          <small class="err" id="profPhone-err" role="alert"></small>
+        </label>
+      </div>
+      <label class="field">
+        <span>Ciudad *</span>
+        <input type="text" id="profCity" name="city" value="${esc(user.city || 'Ciudad de México')}" required placeholder="Ciudad de México">
+        <small class="err" id="profCity-err" role="alert"></small>
+      </label>
+    `;
+  } else {
+    // donor
+    roleFieldsHtml = `
+      <div class="row">
+        <label class="field field-readonly" style="flex:1">
+          <span>Grupo sanguíneo <span class="badge-ro">Verificado en laboratorio</span></span>
+          <input type="text" value="${esc(user.blood || 'O+')}" readonly aria-readonly="true" tabindex="-1">
+        </label>
+        <label class="field field-readonly" style="flex:1">
+          <span>Estado de aptitud</span>
+          <input type="text" value="${esc(user.status || 'Apto para donar')}" readonly aria-readonly="true" tabindex="-1">
+        </label>
+      </div>
+      <div class="row">
+        <label class="field" style="flex:1">
+          <span>Teléfono de contacto *</span>
+          <input type="tel" id="profPhone" name="phone" value="${esc(user.phone || '55-2345-6789')}" required placeholder="55-2345-6789">
+          <small class="err" id="profPhone-err" role="alert"></small>
+        </label>
+        <label class="field" style="flex:1">
+          <span>Ciudad de residencia *</span>
+          <input type="text" id="profCity" name="city" value="${esc(user.city || 'Ciudad de México')}" required placeholder="Ciudad de México">
+          <small class="err" id="profCity-err" role="alert"></small>
+        </label>
+      </div>
+      <div class="banner info" style="font-size:12px;margin-top:6px">
+        Para actualizar tus factores de salud o pre-triaje médico NOM-253, utiliza la opción <b>Actualizar datos médicos</b> desde la pantalla principal de perfil.
+      </div>
+    `;
+  }
+
+  m.innerHTML = `
+    <div class="card modal-profile">
+      <div class="between" style="margin-bottom:14px">
+        <div>
+          <h2 id="modalProfileTitle" style="font-size:20px;color:var(--txt)">Editar Perfil</h2>
+          <small class="mut">${roleName} · VitalRed</small>
+        </div>
+        <button class="btn ghost sm" data-x aria-label="Cerrar modal" style="min-width:44px;min-height:44px">${icon('x', 18)}</button>
+      </div>
+
+      <form id="formEditProfile" class="stack" novalidate>
+        <label class="field">
+          <span>Nombre completo *</span>
+          <input type="text" id="profName" name="name" value="${esc(user.name)}" required minlength="3" placeholder="Nombre completo" autocomplete="name" style="min-height:48px">
+          <small class="err" id="profName-err" role="alert" aria-live="polite"></small>
+        </label>
+
+        <label class="field field-readonly">
+          <span>Correo electrónico institucional / cuenta <span class="badge-ro">Identificador único</span></span>
+          <input type="email" value="${esc(user.email)}" readonly aria-readonly="true" tabindex="-1" style="min-height:48px">
+          <small class="mut" style="font-size:11px;display:block;margin-top:2px">El correo es el identificador principal de inicio de sesión.</small>
+        </label>
+
+        ${roleFieldsHtml}
+
+        <div class="row" style="margin-top:16px">
+          <button type="button" class="btn ghost" data-x style="min-height:44px">Cancelar</button>
+          <button type="submit" class="btn primary" id="btnSaveProfile" style="min-height:44px">Guardar cambios</button>
+        </div>
+      </form>
+    </div>
+  `;
+
+  const form = m.querySelector('#formEditProfile');
+
+  form.addEventListener('submit', (e) => {
+    e.preventDefault();
+
+    m.querySelectorAll('.err').forEach((el) => { el.textContent = ''; });
+    m.querySelectorAll('input.bad, select.bad').forEach((el) => { el.classList.remove('bad'); });
+
+    let hasError = false;
+
+    const nameInput = m.querySelector('#profName');
+    const nameVal = nameInput.value.trim();
+    if (!nameVal || nameVal.length < 3) {
+      nameInput.classList.add('bad');
+      m.querySelector('#profName-err').textContent = 'El nombre debe tener al menos 3 caracteres.';
+      if (!hasError) { nameInput.focus(); hasError = true; }
+    }
+
+    const phoneInput = m.querySelector('#profPhone');
+    if (phoneInput) {
+      const phoneVal = phoneInput.value.trim();
+      const digitsOnly = phoneVal.replace(/\D/g, '');
+      if (!phoneVal || digitsOnly.length < 8) {
+        phoneInput.classList.add('bad');
+        m.querySelector('#profPhone-err').textContent = 'Introduce un teléfono de contacto válido (mín. 8 dígitos).';
+        if (!hasError) { phoneInput.focus(); hasError = true; }
+      }
+    }
+
+    if (role === 'medical') {
+      const servInput = m.querySelector('#profService');
+      if (servInput && !servInput.value.trim()) {
+        servInput.classList.add('bad');
+        m.querySelector('#profService-err').textContent = 'El servicio o especialidad es obligatorio.';
+        if (!hasError) { servInput.focus(); hasError = true; }
+      }
+    } else if (role === 'transport') {
+      const unitInput = m.querySelector('#profUnit');
+      if (unitInput && !unitInput.value.trim()) {
+        unitInput.classList.add('bad');
+        m.querySelector('#profUnit-err').textContent = 'La unidad asignada es obligatoria.';
+        if (!hasError) { unitInput.focus(); hasError = true; }
+      }
+      const hospInput = m.querySelector('#profHospital');
+      if (hospInput && !hospInput.value.trim()) {
+        hospInput.classList.add('bad');
+        m.querySelector('#profHospital-err').textContent = 'La base operativa es obligatoria.';
+        if (!hasError) { hospInput.focus(); hasError = true; }
+      }
+    } else if (role === 'bank') {
+      const posInput = m.querySelector('#profPosition');
+      if (posInput && !posInput.value.trim()) {
+        posInput.classList.add('bad');
+        m.querySelector('#profPosition-err').textContent = 'El cargo institucional es obligatorio.';
+        if (!hasError) { posInput.focus(); hasError = true; }
+      }
+      const hospInput = m.querySelector('#profHospital');
+      if (hospInput && !hospInput.value.trim()) {
+        hospInput.classList.add('bad');
+        m.querySelector('#profHospital-err').textContent = 'La institución es obligatoria.';
+        if (!hasError) { hospInput.focus(); hasError = true; }
+      }
+    }
+
+    if (hasError) return;
+
+    const patch = { name: nameVal };
+    if (phoneInput) patch.phone = phoneInput.value.trim();
+    const cityInput = m.querySelector('#profCity');
+    if (cityInput) patch.city = cityInput.value.trim();
+
+    if (role === 'medical') {
+      patch.hospital = m.querySelector('#profHospital').value;
+      patch.shift = m.querySelector('#profShift').value;
+      patch.service = m.querySelector('#profService').value.trim();
+    } else if (role === 'transport') {
+      patch.unit = m.querySelector('#profUnit').value.trim();
+      patch.hospital = m.querySelector('#profHospital').value.trim();
+      patch.operatorStatus = m.querySelector('#profOpStatus').value;
+      patch.shift = m.querySelector('#profShift').value;
+    } else if (role === 'bank') {
+      const posVal = m.querySelector('#profPosition').value.trim();
+      patch.position = posVal;
+      patch.cargo = posVal;
+      patch.hospital = m.querySelector('#profHospital').value.trim();
+      patch.shift = m.querySelector('#profShift').value;
+    }
+
+    const success = updateUserProfile(user.email, patch);
+    if (!success) {
+      toast('Error al actualizar el perfil en el almacenamiento.', 'err');
+      return;
+    }
+
+    toast('Perfil actualizado correctamente', 'ok');
+    close();
+    onSave?.();
+  });
+
+  document.body.append(m);
+  setTimeout(() => {
+    const firstInput = m.querySelector('#profName');
+    firstInput?.focus();
+  }, 50);
+}

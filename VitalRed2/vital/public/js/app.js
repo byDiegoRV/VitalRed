@@ -4,7 +4,7 @@ import { screens } from './screens.js';
 import { DEFAULT_TRIP, getTrip, getHistory } from './screens-transport.js';
 import { passwordIssues, go, toast, confirmModal, notifModal, icon, esc, download } from './ui.js';
 import { guard } from './flow.js';
-import { stockNow, RESERVABLE, reportCsv, reportDoc, openNewBagModal, openUnitDetailModal } from './screens-ui.js';
+import { stockNow, RESERVABLE, reportCsv, reportDoc, openNewBagModal, openUnitDetailModal, openPasswordRecoveryModal, openEditProfileModal } from './screens-ui.js';
 
 const NAV = {
   donor: [['d/home', 'Inicio', 'home'], ['d/alert', 'Donar', 'drop'], ['d/qr', 'Citas', 'calendar'], ['d/profile', 'Perfil', 'user']],
@@ -70,11 +70,11 @@ function route() {
       `;
     }
 
-    app.innerHTML = `<div class="page">
+    app.innerHTML = `<a href="#main-content" class="skip-link">Saltar al contenido principal</a><div class="page">
       <header class="hdr">
         <div class="row" style="flex:none">
           ${showBack ? `<button class="btn ghost sm" data-act="back">← Volver</button>` : ''}
-          <div class="logo" data-go="${user ? HOME[user.role] : 'splash'}"><i>${icon('drop', 18)}</i>VitalRed</div>
+          <div class="logo" role="button" tabindex="0" data-go="${user ? HOME[user.role] : 'splash'}" aria-label="Ir al inicio de VitalRed"><i>${icon('drop', 18)}</i>VitalRed</div>
         </div>
         <div class="row" style="flex:none;align-items:center">
           ${user ? `
@@ -82,15 +82,15 @@ function route() {
               ${icon('bell', 18)}
               ${unreadCount > 0 ? `<span class="notif-badge">${unreadCount > 9 ? '9+' : unreadCount}</span>` : ''}
             </button>
-            <div class="who"><b>${user.name}</b><small>${ROLES[user.role]}</small></div>
+            <div class="who" role="button" tabindex="0" data-act="openProfile" aria-label="Ver perfil de ${esc(user.name)}" title="Ver perfil" style="cursor:pointer"><b>${esc(user.name)}</b><small>${ROLES[user.role]}</small></div>
             <button class="btn ghost sm" data-act="logout">Salir</button>
           ` : ''}
           <button class="btn ghost sm" data-act="theme" aria-label="Cambiar tema">${icon(get().theme === 'dark' ? 'moon' : 'sun', 18)}</button>
         </div>
       </header>
       ${user ? `<nav class="tabs">${NAV[user.role].map(([r, l, i]) => `<a href="#/${r}" class="${r === path || NAV_PARENT[path] === r ? 'on' : ''}">${icon(i, 18)}<span>${l}</span></a>`).join('')}</nav>` : ''}
-      <main class="${screen.wide ? 'wide' : ''}">${mainHtml}</main>
-      <footer>VitalRed v3.0 — Prototipo simulado — <a data-act="resetDemo">Reiniciar demo</a></footer>
+      <main id="main-content" tabindex="-1" class="${screen.wide ? 'wide' : ''}">${mainHtml}</main>
+      <footer>VitalRed v3.0 — Prototipo simulado — <a href="javascript:void(0)" data-act="resetDemo" role="button">Reiniciar demo</a></footer>
     </div>`;
     cleanup?.();
     cleanup = screen.mount?.(app.querySelector('main'), draw) || null;
@@ -224,6 +224,19 @@ const REG_RULES = {
 };
 
 const actions = {
+  openProfile() {
+    const u = currentUser();
+    if (!u) return;
+    const profileRoute = NAV[u.role]?.find((n) => n[0].endsWith('/profile'))?.[0] || `${u.role[0]}/profile`;
+    go(profileRoute);
+  },
+  openRecoverModal() {
+    openPasswordRecoveryModal();
+  },
+  openEditProfileModal() {
+    const u = currentUser();
+    if (u) openEditProfileModal(u, () => route());
+  },
   back() {
     const { path } = parseHash();
     const parent = NAV_PARENT[path];
