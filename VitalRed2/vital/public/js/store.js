@@ -142,7 +142,7 @@ try {
 }
 
 export const get = () => state;
-export const set = (patch) => {
+export const set = (patch, opts = {}) => {
   const { session, ...rest } = patch;
   if ('session' in patch) {
     try {
@@ -171,6 +171,13 @@ export const set = (patch) => {
     localStorage.setItem(KEY, JSON.stringify(state));
   } catch (e) {
     console.warn('[VitalRed store] Failed to persist state:', e);
+  }
+
+  // Notificar al sincronizador en la nube si el cambio fue originado localmente y no es silencioso
+  if (!opts.remote && !opts.noSync && typeof window !== 'undefined' && window.__vitalred_on_local_change) {
+    try {
+      window.__vitalred_on_local_change(state);
+    } catch (e) {}
   }
 };
 export const reset = () => {

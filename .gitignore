@@ -1,0 +1,14 @@
+# macOS
+.DS_Store
+*.DS_Store
+docs/.DS_Store
+
+# IDE / Gemini Antigravity
+.gemini/
+
+# Node
+node_modules/
+VitalRed2/vital/node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*

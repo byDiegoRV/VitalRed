@@ -1,0 +1,9 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Sala compartida en tiempo real para demostraciones y pruebas de VitalRed v3
+    match /vitalred_rooms/{roomId} {
+      allow read, write: if true;
+    }
+  }
+}
