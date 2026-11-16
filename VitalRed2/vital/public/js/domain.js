@@ -40,7 +40,18 @@ export const nextCase = (donorBlood) => {
 
 export const nextReqId = () => { const n = (get().reqSeq || 2048) + 1; set({ reqSeq: n }); return `ST-${n}`; };
 export const nextApptId = () => { const n = (get().apptSeq || 8890) + 1; set({ apptSeq: n }); return `VR-2026-${n}`; };
-export const activeReq = () => { const r = get().req; return r && !['cancelada', 'cerrada'].includes(r.status) ? r : null; };
+export const activeReq = () => {
+  const reqs = get().requests || [];
+  const curId = get().activeReqId;
+  if (curId) {
+    const found = reqs.find((r) => r.id === curId);
+    if (found && !['cancelada', 'cerrada'].includes(found.status)) return found;
+  }
+  const firstActive = reqs.find((r) => !['cancelada', 'cerrada'].includes(r.status));
+  if (firstActive) return firstActive;
+  const r = get().req;
+  return r && !['cancelada', 'cerrada'].includes(r.status) ? r : null;
+};
 export const shortName = (n) => { const p = String(n || '').trim().split(/\s+/); return p.length > 1 ? `${p[0]} ${p[1][0]}.` : p[0] || ''; };
 
 export const km = (a, b) => {
@@ -84,26 +95,41 @@ export const daysUntil = (targetDate) => {
   return Math.max(0, diff);
 };
 
-export const patchReq = (p) => {
-  const r = get().req || {}, log = [...(r.log || [])];
-  const key = p.status && p.status !== r.status ? p.status : p.delivery && p.delivery !== r.delivery ? `entrega_${p.delivery}` : null;
+export const patchReq = (p, targetId = null) => {
+  const currentReqs = get().requests || [];
+  const activeId = targetId || get().activeReqId || get().req?.id;
+  const target = currentReqs.find((r) => r.id === activeId) || get().req || {};
+  const log = [...(target.log || [])];
+  const key = p.status && p.status !== target.status ? p.status : p.delivery && p.delivery !== target.delivery ? `entrega_${p.delivery}` : null;
   if (key) log.push({ k: key, at: Date.now() });
-  set({ req: { ...r, ...p, log } });
+  const updated = { ...target, ...p, log };
+  const updatedList = currentReqs.map((r) => (r.id === target.id ? updated : r));
+  if (!updatedList.some((r) => r.id === target.id) && target.id) {
+    updatedList.unshift(updated);
+  }
+  const isTargetActive = !get().activeReqId || get().activeReqId === target.id;
+  set({
+    requests: updatedList,
+    req: isTargetActive ? updated : get().req
+  });
 };
 
 export const completeDonation = (appt) => {
   const donor = get().users.find((u) => u.email === appt.email); if (!donor) return;
-  const r = get().req, mine = r && r.donor?.email === donor.email;
+  const r = (get().requests || []).find((x) => x.donor?.email === donor.email) || get().req;
+  const mine = r && r.donor?.email === donor.email;
   const rec = { id: `D-${String((get().donations || []).length + 5).padStart(4, '0')}`, email: donor.email, date: new Date().toISOString(), hospital: mine ? r.hospital : 'Banco de Sangre Central', component: mine ? r.component : 'Sangre total', units: 1, folio: appt.id, area: mine ? r.area : 'Convocatoria', reqId: mine ? r.id : null };
   set({ donations: [...(get().donations || []), rec], users: get().users.map((u) => (u.email === donor.email ? { ...u, donations: (u.donations || 0) + 1 } : u)), lastDonation: { email: donor.email, id: rec.id } });
-  if (mine && ['esperando', 'programada'].includes(r.status)) patchReq({ status: 'completada', completedAt: new Date().toISOString(), delivery: 'preparando' });
+  if (mine && ['esperando', 'programada'].includes(r.status)) patchReq({ status: 'completada', completedAt: new Date().toISOString(), delivery: 'preparando' }, r.id);
 };
 
-export const dispatchUnit = (baseTrip) => {
-  const r = get().req; if (!r || r.status !== 'completada' || r.delivery !== 'preparando') return null;
+export const dispatchUnit = (baseTrip, reqId = null) => {
+  const targetId = reqId || get().activeReqId || get().req?.id;
+  const r = (get().requests || []).find((x) => x.id === targetId) || get().req;
+  if (!r || r.status !== 'completada' || r.delivery !== 'preparando') return null;
   const dist = routeKm(r.hospital);
   const trip = { ...baseTrip, id: `TR-${r.id.slice(3)}`, origin: BANK.name, dest: r.hospital, content: `${r.units} u. ${r.component} ${r.blood}`, distance: `${dist.toFixed(1)} km`, eta: `${Math.max(5, Math.round((dist / 30) * 60))} min`, status: 'disponible', check0: false, check1: false, check2: false, scanOk: false, signOk: false, photoOrigin: null, photoDelivery: null, thermalLogs: [], reqId: r.id, priority: r.priority, area: r.area, bed: r.bed, requester: r.requester, publishedAt: Date.now() };
-  set({ tripQueue: [...(get().tripQueue || []), trip] }); patchReq({ delivery: 'despachada', tripId: trip.id });
+  set({ tripQueue: [...(get().tripQueue || []), trip] }); patchReq({ delivery: 'despachada', tripId: trip.id }, r.id);
   return trip;
 };
 
@@ -112,16 +138,17 @@ export const takeTrip = (id, user) => {
   if (!t || get().trip) return null;
   const trip = { ...t, status: 'asignada', assignedAt: Date.now(), assignedTo: `${user.name} — ${user.unit || 'AMB-014'}` };
   set({ trip, tripQueue: q.filter((x) => x.id !== id), temp: 4.2 });
-  if (trip.reqId && get().req?.id === trip.reqId) patchReq({ delivery: 'asignada', assignedTo: trip.assignedTo });
+  if (trip.reqId) patchReq({ delivery: 'asignada', assignedTo: trip.assignedTo }, trip.reqId);
   return trip;
 };
 
 export const releaseDonor = (email, denied = null) => {
-  const r = get().req, my = get().myAppt;
+  const r = (get().requests || []).find((x) => x.donor?.email === email) || get().req;
+  const my = get().myAppt;
   if (r && r.donor?.email === email && ['esperando', 'programada'].includes(r.status)) {
     const { donor, appt, ...rest } = r, excluded = denied ? [...(r.excluded || []), email] : r.excluded || [];
     set({ req: { ...rest, excluded, declined: (r.declined || 0) + 1, lastDenied: denied || undefined } });
-    patchReq({ status: 'buscando', notified: eligibleDonors(r.blood, excluded).length });
+    patchReq({ status: 'buscando', notified: eligibleDonors(r.blood, excluded).length }, r.id);
   }
   set({ inFlow: false, triage: null, triageAns: null, myAppt: null, slot: null, appts: denied ? get().appts : get().appts.filter((a) => !my || a.id !== my.id) });
 };

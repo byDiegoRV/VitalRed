@@ -60,10 +60,16 @@ const RULES = {
   'd/pdf': () => null,
 
   // ---- Médico
-  'm/new': () => (activeReq() ? ['m/radar', 'Ya tienes una solicitud en curso: cancélala o espera a que se complete'] : null),
-  'm/none': (s) => (s.req && !['cancelada', 'cerrada'].includes(s.req.status) ? ['m/radar', 'Hay una solicitud activa'] : null),
-  'm/reception': (s) => (s.req && s.req.status === 'completada' && s.req.delivery === 'entregada' ? null : ['m/radar', 'La recepción estará disponible cuando llegue la unidad']),
-  'm/radar': (s) => (s.req && s.req.status === 'cancelada' ? ['m/none', 'La solicitud fue cancelada'] : null),
+  'm/new': () => null,
+  'm/none': (s) => {
+    const r = activeReq();
+    return (r && !['cancelada', 'cerrada', 'sinrespuesta'].includes(r.status) ? ['m/radar', 'Hay una solicitud activa'] : null);
+  },
+  'm/reception': () => {
+    const r = activeReq();
+    return (r && r.status === 'completada' && r.delivery === 'entregada' ? null : ['m/radar', 'La recepción estará disponible cuando llegue la unidad']);
+  },
+  'm/radar': () => null,
 
   // ---- Transportista
   't/check': () => {

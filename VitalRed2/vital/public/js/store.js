@@ -1,3 +1,5 @@
+import { passwordIssues } from './ui.js';
+
 const KEY = 'vitalred-v3', SESSION = 'vitalred-session', BOOT = 'vitalred-boot', LOCK = 'vitalred-lock';
 const TAB = Math.random().toString(36).slice(2);
 const DEFAULT_MEDICAL = { gender: 'm', age: 'adult', weight: 'ok', blood: 'O+', risk0: 'no', risk1: 'no', risk2: 'no' };
@@ -33,15 +35,29 @@ export const seedInventory = () => {
   ];
 };
 
+export const seedReqs = () => {
+  const now = Date.now();
+  const m = (x) => now + x * 60000;
+  return [
+    { id: 'ST-2048', blood: 'O-', patient: 'Lucía Martínez Reyes', hc: 'HC 482901', bed: 'Quirófano 2', area: 'Quirófano', label: 'En búsqueda', color: 'warn', units: 2, component: 'Concentrado de hematíes', priority: 'CRÍTICA', diagnosis: 'Hemorragia intraoperatoria', status: 'buscando', at: m(-4), requester: 'Dra. Ana Torres', hospital: 'Hospital General', createdAt: new Date(m(-4)).toISOString(), notified: 6, live: true },
+    { id: 'ST-2046', blood: 'AB+', patient: 'Carlos Pérez Luna', hc: 'HC 391774', bed: 'Box Urgencias 08', area: 'Urgencias', label: 'Confirmación de unidad', color: 'ok', units: 3, component: 'Plasma fresco congelado', priority: 'ALTA', diagnosis: 'Coagulopatía', status: 'completada', delivery: 'entregada', donor: { name: 'Daniel R.', blood: 'AB+' }, at: m(-95), requester: 'Dr. Mario Fuentes', hospital: 'Hospital General', createdAt: new Date(m(-95)).toISOString(), notified: 2, live: true },
+    { id: 'ST-2042', blood: 'A+', patient: 'Elena Ramírez Soto', hc: 'HC 520118', bed: 'Quirófano 4', area: 'Quirófano', label: 'Programada', color: '', units: 1, component: 'Plaquetas por aféresis', priority: 'PROGRAMADA', diagnosis: 'Cirugía programada', status: 'programada', donor: { name: 'Sofía M.', blood: 'A+' }, at: m(90), scheduled: true, requester: 'Dra. Lucía Vera', hospital: 'Hospital General', createdAt: new Date(m(90)).toISOString(), notified: 5, live: true },
+    { id: 'ST-2039', blood: 'B-', patient: 'Miguel Ángel Salas', hc: 'HC 278430', bed: 'Shock room', area: 'Urgencias', label: 'Sin respuesta', color: 'red', units: 4, component: 'Concentrado de hematíes', priority: 'CRÍTICA', diagnosis: 'Politraumatismo', status: 'sinrespuesta', at: m(-28), requester: 'Dr. Mario Fuentes', hospital: 'Hospital General', createdAt: new Date(m(-28)).toISOString(), notified: 1, live: true },
+    { id: 'ST-2035', blood: 'A-', patient: 'Ana Sofía Vega', hc: 'HC 440821', bed: 'Observación 3', area: 'Urgencias', label: 'Cancelada', color: '', units: 2, component: 'Plasma fresco congelado', priority: 'CANCELADA', diagnosis: 'Observación', status: 'cancelada', at: m(-150), requester: 'Dra. Ana Torres', hospital: 'Hospital General', createdAt: new Date(m(-150)).toISOString(), notified: 4, live: true }
+  ];
+};
+
 const seed = () => ({
   theme: matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light',
   session: null,
   users: [
-    { name: 'Aleks López', email: 'donante@vitalred.org', password: 'Donante123', role: 'donor', blood: 'O+', status: 'Apto para donar', donations: 4, medical: DEFAULT_MEDICAL },
-    { name: 'Dra. Ana Torres', email: 'medico@vitalred.org', password: 'Medico123', role: 'medical', hospital: 'Hospital General' },
-    { name: 'Luis Pérez', email: 'transporte@vitalred.org', password: 'Transp123', role: 'transport', hospital: 'Banco Central', unit: 'AMB-014', license: 'LIC-458213' },
-    { name: 'Mtra. Sofía Ruiz', email: 'banco@vitalred.org', password: 'Banco123', role: 'bank', hospital: 'Banco Central' },
+    { name: 'Aleks López', email: 'donante@vitalred.org', password: 'Donante123', role: 'donor', blood: 'O+', status: 'Apto para donar', donations: 4, phone: '55-2345-6789', city: 'Ciudad de México', medical: DEFAULT_MEDICAL },
+    { name: 'Dra. Ana Torres', email: 'medico@vitalred.org', password: 'Medico123', role: 'medical', hospital: 'Hospital General', cedula: 'CED-7765421', service: 'Urgencias / Quirófano', shift: 'Jornada Acumulada', phone: '55-4192-8830', city: 'Ciudad de México' },
+    { name: 'Luis Pérez', email: 'transporte@vitalred.org', password: 'Transp123', role: 'transport', hospital: 'Banco Central', unit: 'AMB-014', license: 'LIC-458213', operatorStatus: 'En servicio', shift: 'Matutino', phone: '55-8392-1044', city: 'Ciudad de México' },
+    { name: 'Mtra. Sofía Ruiz', email: 'banco@vitalred.org', password: 'Banco123', role: 'bank', hospital: 'Banco Central', position: 'Dirección Médica', cargo: 'Dirección Médica', shift: 'Matutino', phone: '55-6671-9200', city: 'Ciudad de México' },
   ],
+  requests: seedReqs(),
+  activeReqId: 'ST-2048',
   req: null, reg: null, triageAns: null, triage: null, temp: 4.2, signed: false,
   notifications: seedNotifs(),
   appts: [
@@ -62,6 +78,21 @@ try {
 }
 
 try {
+  if (!Array.isArray(state.requests) || !state.requests.length) {
+    state.requests = seedReqs();
+    if (state.req && state.req.id) {
+      state.requests = [state.req, ...state.requests.filter((r) => r.id !== state.req.id)];
+    }
+    state.activeReqId = state.req?.id || 'ST-2048';
+    localStorage.setItem(KEY, JSON.stringify(state));
+  }
+  if (!state.activeReqId && state.requests.length) {
+    state.activeReqId = state.requests[0].id;
+  }
+  if (!state.req) {
+    state.req = state.requests.find((r) => r.id === state.activeReqId) || state.requests[0] || null;
+  }
+
   if (!Array.isArray(state.notifications)) {
     state.notifications = seedNotifs();
     localStorage.setItem(KEY, JSON.stringify(state));
@@ -71,6 +102,27 @@ try {
     state.inventory = seedInventory();
     if (!state.invSeq) state.invSeq = 91040;
     localStorage.setItem(KEY, JSON.stringify(state));
+  }
+
+  const seedDefaults = {
+    'donante@vitalred.org': { phone: '55-2345-6789', city: 'Ciudad de México' },
+    'medico@vitalred.org': { cedula: 'CED-7765421', service: 'Urgencias / Quirófano', shift: 'Jornada Acumulada', phone: '55-4192-8830', city: 'Ciudad de México' },
+    'transporte@vitalred.org': { unit: 'AMB-014', license: 'LIC-458213', operatorStatus: 'En servicio', shift: 'Matutino', phone: '55-8392-1044', city: 'Ciudad de México' },
+    'banco@vitalred.org': { position: 'Dirección Médica', cargo: 'Dirección Médica', shift: 'Matutino', phone: '55-6671-9200', city: 'Ciudad de México' }
+  };
+  if (Array.isArray(state.users)) {
+    let usersDirty = false;
+    state.users.forEach((u) => {
+      const defs = seedDefaults[u.email];
+      if (defs) {
+        for (const [k, v] of Object.entries(defs)) {
+          if (u[k] === undefined) { u[k] = v; usersDirty = true; }
+        }
+      }
+    });
+    if (usersDirty) {
+      try { localStorage.setItem(KEY, JSON.stringify(state)); } catch {}
+    }
   }
 
   let dirty = false;
@@ -97,7 +149,23 @@ export const set = (patch) => {
       if (session) sessionStorage.setItem(SESSION, session); else sessionStorage.removeItem(SESSION);
     } catch {}
   }
+  if ('req' in rest && rest.req && rest.req.id) {
+    const curReq = rest.req;
+    const existing = (state.requests || []).filter((r) => r.id !== curReq.id);
+    state.requests = [curReq, ...existing];
+    state.activeReqId = curReq.id;
+  }
+  if ('requests' in rest && Array.isArray(rest.requests)) {
+    state.requests = rest.requests;
+    if (!state.activeReqId && state.requests.length) {
+      state.activeReqId = state.requests[0].id;
+    }
+    state.req = state.requests.find((r) => r.id === state.activeReqId) || state.requests[0] || null;
+  }
   Object.assign(state, rest);
+  if (!state.req && Array.isArray(state.requests) && state.requests.length) {
+    state.req = state.requests.find((r) => r.id === state.activeReqId) || state.requests[0];
+  }
   state.session = null;
   try {
     localStorage.setItem(KEY, JSON.stringify(state));
@@ -246,4 +314,56 @@ export const checkExpirations = () => {
     caducadas,
     cuarentena
   };
+};
+
+export const updateUserProfile = (email, patch = {}) => {
+  if (!email || !state?.users) return false;
+  const normTarget = normEmail(email);
+  const user = state.users.find((u) => normEmail(u.email) === normTarget);
+  if (!user) return false;
+
+  if (patch.email && normEmail(patch.email) !== normTarget) {
+    const exists = state.users.some((u) => normEmail(u.email) === normEmail(patch.email));
+    if (exists) return false;
+  }
+
+  const isCurrent = normEmail(sessionEmail()) === normTarget;
+
+  Object.assign(user, patch);
+
+  if (isCurrent && patch.email) {
+    try { sessionStorage.setItem(SESSION, user.email); } catch {}
+    holdLock(user);
+  }
+
+  try {
+    localStorage.setItem(KEY, JSON.stringify(state));
+  } catch (e) {
+    console.warn('[VitalRed store] Failed to persist state in updateUserProfile:', e);
+  }
+  return true;
+};
+
+export const resetUserPassword = (email, newPassword) => {
+  if (!email || !newPassword || !state?.users) {
+    return { ok: false, error: 'Correo y nueva contraseña son obligatorios.' };
+  }
+  const normTarget = normEmail(email);
+  const user = state.users.find(
+    (u) => normEmail(u.email) === normTarget || (u.cedula && String(u.cedula).trim().toLowerCase() === normTarget)
+  );
+  if (!user) {
+    return { ok: false, error: 'Usuario no encontrado con el correo o cédula especificado.' };
+  }
+  const issues = typeof passwordIssues === 'function' ? passwordIssues(newPassword) : [];
+  if (issues && issues.length > 0) {
+    return { ok: false, error: `La contraseña no cumple los requisitos: ${issues.join(', ')}` };
+  }
+  user.password = String(newPassword);
+  try {
+    localStorage.setItem(KEY, JSON.stringify(state));
+  } catch (e) {
+    console.warn('[VitalRed store] Failed to persist state in resetUserPassword:', e);
+  }
+  return { ok: true };
 };

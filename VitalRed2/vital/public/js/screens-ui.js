@@ -1,5 +1,5 @@
-import { get, set, currentUser, HOME, getInventory, checkExpirations, getUnitExpirationInfo, addInventoryItem, updateInventoryItem, removeInventoryItem } from './store.js';
-import { btn, card, badge, field, toggle, stepper, qrPattern, icon, statusScreen, esc, confirmModal, toast, emptyState, loadingState } from './ui.js';
+import { get, set, currentUser, HOME, ROLES, getInventory, checkExpirations, getUnitExpirationInfo, addInventoryItem, updateInventoryItem, removeInventoryItem, updateUserProfile, resetUserPassword } from './store.js';
+import { btn, card, badge, field, toggle, stepper, qrPattern, icon, statusScreen, esc, confirmModal, toast, emptyState, loadingState, PW_RULES, passwordIssues, pwRules, bindPwRules } from './ui.js';
 import { fleetUnits, fleetMount, BANK } from './maps.js';
 import { activeReq, historyOf, fmtDate, nextEligible, compatible, shortName, statusOf, deferred, reasonLabel, REASONS, CHECKS, reviewsAll, eligibleDonors, hhmm, ago, seedAt, fmtDateTime, SHELF_LIFE_DAYS, RECOMMENDED_VOLUMES, CHAMBER_LOCATIONS, calculateExpirationDate } from './domain.js';
 import { donorStage, STAGE_HOME } from './flow.js';
@@ -29,6 +29,29 @@ const seedReqs = () => {
 };
 
 const reqList = () => {
+  const stored = get().requests;
+  if (Array.isArray(stored) && stored.length) {
+    return stored.map((r) => ({
+      id: r.id,
+      blood: r.blood,
+      patient: r.patient || 'Paciente en curso',
+      hc: r.hc || 'HC nuevo',
+      bed: r.bed || r.area || 'Urgencias',
+      area: r.area || 'Urgencias',
+      label: reqLabel(r),
+      color: r.priority === 'CRÍTICA' ? 'red' : r.status === 'completada' ? 'ok' : 'warn',
+      units: r.units,
+      component: r.component || 'Concentrado de hematíes',
+      priority: r.priority || 'ALTA',
+      hospital: r.hospital || 'Hospital General',
+      diagnosis: r.diagnosis || 'Urgencia transfusional',
+      stage: r.status,
+      at: Date.parse(r.createdAt) || r.at || Date.now(),
+      requester: r.requester || 'Dra. Ana Torres',
+      donor: r.donor ? (typeof r.donor === 'string' ? r.donor : `${r.donor.name} • ${r.donor.blood || r.blood}`) : undefined,
+      live: true
+    }));
+  }
   const r = get().req;
   const live = r && activeReq() ? [{ id: r.id, blood: r.blood, patient: r.patient || 'Paciente en curso', hc: r.hc || 'HC nuevo', bed: r.bed || r.area, area: r.area, label: reqLabel(r), color: 'warn', units: r.units, component: r.component, priority: r.priority, hospital: r.hospital, diagnosis: r.diagnosis, stage: r.status, at: Date.parse(r.createdAt) || Date.now(), requester: r.requester, live: true }] : [];
   return [...live, ...seedReqs()];
@@ -458,6 +481,9 @@ export const overrides = {
         <form data-form="login" class="stack" novalidate>
           ${field('email', 'Correo o cédula profesional', 'text', 'usuario@vitalred.org')}
           ${field('password', 'Contraseña', 'password', '••••••••')}
+          <div style="text-align:right;margin-top:-6px">
+            <button type="button" class="btn-link" data-act="openRecoverModal" style="min-height:44px;min-width:44px">¿Olvidaste tu contraseña?</button>
+          </div>
           ${btn('<span class="spin"></span>Ingresar', { type: 'submit' })}
         </form>
         <p class="center mut" style="margin-top:14px">¿Eres donante nuevo? <a href="#/register">Regístrate</a> • <a href="#/register?inst=1">Registro institucional</a></p>
@@ -468,13 +494,55 @@ export const overrides = {
   'm/radar': {
     role: 'medical',
     render: () => {
-      const r = get().req;
-      if (!r) return statusScreen(icon('radar', 44), 'Sin solicitud', 'Crea una solicitud para activar el radar.', btn('Nueva solicitud', { go: 'm/new' }));
+      const allActive = (get().requests || []).filter((x) => !['cancelada', 'cerrada'].includes(x.status));
+      const cur = (get().requests || []).find((x) => x.id === get().activeReqId) || get().req || allActive[0];
+      if (!cur && !allActive.length) {
+        return statusScreen(icon('radar', 44), 'Sin solicitudes activas', 'No hay solicitudes transfusionales activas en la guardia. Puedes emitir una nueva alerta Código Rojo.', btn('Nueva solicitud urgente', { go: 'm/new' }));
+      }
+      const r = cur || allActive[0];
       const idx = { buscando: 1, sinrespuesta: 1, esperando: 2, programada: 3, completada: 4, cerrada: 4 }[r.status] ?? 1, head = stepper(REQ_STEPS, idx);
       const sim = (label) => btn(label, { act: 'simStage', v: 'ghost' });
       const row = (k, v) => `<div class="item"><span class="mut">${k}</span><b>${v}</b></div>`;
-      const sub = `${r.units} u. de ${esc(r.blood)} • ${esc(r.component || '')} • ${esc(r.hospital)}`;
-      const wrap = (html) => card(`${html}<div class="stack" style="margin-top:12px">${btn('Ver detalle completo y línea de tiempo', { go: `m/detail?id=${r.id}`, v: 'ghost' })}</div>`);
+      const sub = `${r.units} u. de ${esc(r.blood)} • ${esc(r.component || '')} • ${esc(r.hospital || 'Hospital General')}`;
+
+      const switcherHtml = allActive.length ? `
+        <div class="radar-switcher-wrap" role="region" aria-label="Solicitudes transfusionales activas">
+          <div class="between" style="margin-bottom:8px">
+            <span class="lbl" style="font-size:11px;font-weight:700;letter-spacing:.05em;color:var(--mut)">SOLICITUDES ACTIVAS EN LA GUARDIA (${allActive.length})</span>
+            <button class="btn ghost sm" data-go="m/new" type="button" style="min-height:36px;padding:4px 12px;font-size:12px;width:auto">${icon('drop', 14)} ＋ Nueva alerta</button>
+          </div>
+          <div class="radar-switcher" role="tablist" aria-label="Selector de solicitudes activas">
+            ${allActive.map((x) => {
+              const isSel = x.id === r.id;
+              const statusTxt = { buscando: 'Buscando donantes', sinrespuesta: 'Sin respuesta', esperando: 'Donante en camino', programada: 'Cita agendada', completada: 'En logística / Lista' }[x.status] || x.status;
+              return `
+                <div class="radar-card-tab ${isSel ? 'active' : ''}"
+                     role="tab"
+                     tabindex="0"
+                     aria-selected="${isSel ? 'true' : 'false'}"
+                     data-act="selectReq"
+                     data-id="${x.id}"
+                     aria-label="Solicitud ${x.id}, paciente ${esc(shortName(x.patient || 'Paciente'))}, grupo ${esc(x.blood)}">
+                  <div class="between" style="gap:6px">
+                    <b class="redtxt" style="font-size:13px">${esc(x.id)}</b>
+                    ${badge(x.priority === 'CRÍTICA' ? 'CÓDIGO ROJO' : x.priority, x.priority === 'CRÍTICA' ? 'red' : 'warn')}
+                  </div>
+                  <div style="font-size:13px;line-height:1.25">
+                    <b>${esc(shortName(x.patient || 'Paciente'))}</b>
+                    <small class="mut" style="display:block">${esc(x.bed || x.area || 'Urgencias')}</small>
+                  </div>
+                  <div class="between" style="margin-top:2px">
+                    ${chip(x.blood, x.priority === 'CRÍTICA' ? 'red' : '')}
+                    <small class="mut" style="font-weight:700;font-size:11px">• ${statusTxt}</small>
+                  </div>
+                </div>
+              `;
+            }).join('')}
+          </div>
+        </div>
+      ` : '';
+
+      const wrap = (html) => `${switcherHtml}${card(`${html}<div class="stack" style="margin-top:12px">${btn('Ver detalle completo y línea de tiempo', { go: `m/detail?id=${r.id}`, v: 'ghost' })}</div>`)}`;
       if (r.status === 'cerrada') return wrap(`${head}<div class="center stack"><div class="big ok-ring">${icon('check', 40)}</div><h2>Caso cerrado</h2><p class="mut">${sub}</p><p class="mut">La unidad fue recibida y la transfusión inició. Quedó registrada en la trazabilidad.</p>${btn('Nueva solicitud', { go: 'm/new' })}</div>`);
       if (r.status === 'completada') {
         const d = r.delivery || 'preparando', steps = [['preparando', 'Donación aprobada • preparando envío'], ['despachada', 'Unidad despachada • esperando transportista'], ['asignada', 'Transportista asignado'], ['en_ruta', 'Unidad en ruta hacia el hospital'], ['entregada', 'Unidad entregada en el hospital']], at = steps.findIndex(([k]) => k === d), t = get().trip, simLabel = { preparando: 'Simular: banco despacha la unidad', despachada: 'Simular: un transportista toma el viaje', asignada: 'Simular: inicia el traslado', en_ruta: 'Simular: unidad entregada' }[d];
@@ -752,7 +820,45 @@ export const overrides = {
 
   'd/profile': {
     role: 'donor',
-    render: () => { const u = currentUser(), ini = u.name.split(' ').map((w) => w[0]).slice(0, 2).join(''); return `<h2 class="ptitle">Mi Perfil</h2>${card(`<div class="between" style="justify-content:flex-start;gap:16px"><div class="ring">${ini}</div><div><h2>${u.name}</h2>${chip('Tipo: ' + (u.blood || 'O+'), 'red')}</div></div>`)}<div class="banner ${statusOf(u).startsWith('Apto') ? 'ok' : 'warn'}"><b>• ${statusOf(u)}</b><p>${statusOf(u).startsWith('Apto') ? 'Tu pre-triaje está vigente. Puedes responder a alertas de emergencia.' : 'Tu registro requiere revisión médica.'}</p></div>${btn('Actualizar datos médicos', { go: 'd/medical', v: 'ghost' })}<div class="grid two" style="margin-top:12px"><div class="stat"><b style="color:var(--red-text)">${historyOf(u).length}</b><small>Donaciones</small></div><div class="stat"><b style="color:var(--ok-text)">${historyOf(u).length * 3}</b><small>Vidas ayudadas</small></div></div><div style="margin-top:12px">${btn('Ver historial de donaciones', { go: 'd/history', v: 'ghost' })}</div>`; },
+    render: () => {
+      const u = currentUser(), ini = u.name.split(' ').map((w) => w[0]).slice(0, 2).join('');
+      return `<h2 class="ptitle">Mi Perfil</h2>
+      ${card(`
+        <div class="between" style="justify-content:flex-start;gap:16px">
+          <div class="ring">${ini}</div>
+          <div style="flex:1">
+            <div class="between">
+              <h2>${esc(u.name)}</h2>
+              <button class="btn ghost sm" data-act="openEditProfileModal" type="button" style="min-height:44px;min-width:44px">Editar perfil</button>
+            </div>
+            <div style="display:flex;gap:8px;align-items:center;margin-top:4px">
+              ${chip('Tipo: ' + (u.blood || 'O+'), 'red')}
+              <span class="mut" style="font-size:13px">${esc(u.city || 'Ciudad de México')}</span>
+            </div>
+          </div>
+        </div>
+      `)}
+      <div class="banner ${statusOf(u).startsWith('Apto') ? 'ok' : 'warn'}">
+        <b>• ${statusOf(u)}</b>
+        <p>${statusOf(u).startsWith('Apto') ? 'Tu pre-triaje está vigente. Puedes responder a alertas de emergencia.' : 'Tu registro requiere revisión médica.'}</p>
+      </div>
+      ${card(`
+        <div class="between" style="margin-bottom:8px">
+          <h3>Datos de contacto y cuenta</h3>
+          <button class="btn ghost sm" data-act="openEditProfileModal" type="button" style="min-height:44px;min-width:44px">Editar</button>
+        </div>
+        <div class="item"><span class="mut">Correo</span><b>${esc(u.email)}</b></div>
+        <div class="item"><span class="mut">Teléfono</span><b>${esc(u.phone || '55-2345-6789')}</b></div>
+        <div class="item"><span class="mut">Ciudad</span><b>${esc(u.city || 'Ciudad de México')}</b></div>
+        <div class="item"><span class="mut">Grupo sanguíneo</span><b>${esc(u.blood || 'O+')}</b></div>
+      `)}
+      ${btn('Actualizar datos médicos', { go: 'd/medical', v: 'ghost' })}
+      <div class="grid two" style="margin-top:12px">
+        <div class="stat"><b style="color:var(--red-text)">${historyOf(u).length}</b><small>Donaciones</small></div>
+        <div class="stat"><b style="color:var(--ok-text)">${historyOf(u).length * 3}</b><small>Vidas ayudadas</small></div>
+      </div>
+      <div style="margin-top:12px">${btn('Ver historial de donaciones', { go: 'd/history', v: 'ghost' })}</div>`;
+    },
   },
 
   'd/alert': {
@@ -778,7 +884,7 @@ export const overrides = {
       const live = all.filter((x) => x.priority !== 'CANCELADA'), crit = live.filter((x) => x.priority === 'CRÍTICA').length, units = live.reduce((n, x) => n + (x.units || 0), 0);
       const kpis = [['Solicitudes activas', live.length, 'En curso', 'warn'], ['Críticas', crit, 'CÓDIGO ROJO', 'red'], ['Unidades solicitadas', units, 'Hemocomponentes', ''], ['Banco de sangre', 'En línea', `a las ${hhmm(Date.now())}`, 'ok']];
       const reqsHtml = rows.length
-        ? rows.map((x) => `<div class="card req ${x.priority === 'CANCELADA' ? 'dim' : ''}"><div class="between"><div class="row" style="flex:none;gap:12px">${chip(x.blood, x.priority === 'CRÍTICA' ? 'red' : '')}<div><b>${esc(shortName(x.patient))} • ${esc(x.hc)}</b><br><small class="mut">${esc(x.bed)}</small></div></div>${badge(x.label, x.color)}</div><hr><div class="between"><div><small class="lbl">HEMOCOMPONENTE</small><br>${esc(x.component)} • ${x.units} unidad${x.units > 1 ? 'es' : ''}</div><div><small class="lbl">PRIORIDAD</small><br><b class="${x.priority === 'CRÍTICA' ? 'redtxt' : ''}">${x.priority}</b></div><div class="right"><small class="lbl">${esc(x.id)}</small><br>${x.scheduled ? `Hoy • ${hhmm(x.at)}` : ago(x.at)}</div></div><div style="margin-top:12px">${btn('Ver detalle completo', { go: `m/detail?id=${x.id}`, v: 'ghost', cls: 'sm' })}</div></div>`).join('')
+        ? rows.map((x) => `<div class="card req ${x.priority === 'CANCELADA' ? 'dim' : ''}"><div class="between"><div class="row" style="flex:none;gap:12px">${chip(x.blood, x.priority === 'CRÍTICA' ? 'red' : '')}<div><b>${esc(shortName(x.patient))} • ${esc(x.hc)}</b><br><small class="mut">${esc(x.bed)}</small></div></div>${badge(x.label, x.color)}</div><hr><div class="between"><div><small class="lbl">HEMOCOMPONENTE</small><br>${esc(x.component)} • ${x.units} unidad${x.units > 1 ? 'es' : ''}</div><div><small class="lbl">PRIORIDAD</small><br><b class="${x.priority === 'CRÍTICA' ? 'redtxt' : ''}">${x.priority}</b></div><div class="right"><small class="lbl">${esc(x.id)}</small><br>${x.scheduled ? `Hoy • ${hhmm(x.at)}` : ago(x.at)}</div></div><div class="row" style="margin-top:12px">${!['cancelada', 'cerrada'].includes(x.stage) ? `<button class="btn sm" data-act="focusRadar" data-id="${x.id}">Monitorear en Radar</button>` : ''}${btn('Ver detalle completo', { go: `m/detail?id=${x.id}`, v: 'ghost', cls: 'sm' })}</div></div>`).join('')
         : emptyState({
             iconName: 'clipboard',
             title: f === 'crit' ? 'Sin solicitudes críticas activas' : 'Sin solicitudes activas en la guardia',
@@ -810,7 +916,14 @@ export const overrides = {
       const items = getInventory(invFilter);
       const hasActiveFilters = !!(invFilter.search || (invFilter.blood && invFilter.blood !== 'Todos') || (invFilter.component && invFilter.component !== 'Todos') || (invFilter.status && invFilter.status !== 'Todos'));
 
-      return `<div class="between"><div><h1>Banco de Sangre Central</h1><p class="mut">Panel de Control e Inventario de Cámaras Frigoríficas</p></div><small class="mut">${date()}</small></div><div class="grid kpi" style="margin:16px 0">${[['Unidades totales', totalUnits, '▲ +12 hoy', 'ok'], ['Solicitudes pendientes', 5, 'En espera', 'warn'], ['Alertas críticas', stockNow().filter(([, , st]) => st === 'CRÍTICO').length, 'CRÍTICO', 'red'], ['Donaciones hoy', get().appts.filter((a) => a.state === 'Completada').length + 16, 'Meta: 25', '']].map(([l, n, b, c]) => card(`<small class="mut">${l}</small><h1>${n}</h1>${badge(b, c)}`)).join('')}</div><div class="split"><div>${card(`<div class="between"><div><h3>Matriz de Stock — Cámaras Frigoríficas</h3><small class="mut">Monitor de temperatura y reservas por grupo</small></div>${badge('• Tiempo real', 'ok')}</div>${table(['Grupo', 'Bolsas disponibles', 'Estado', 'Actualización'], stockNow().map(([g, n, s], i) => `<tr><td>${chip(g, s === 'CRÍTICO' ? 'red' : '')}</td><td><b>${n} bolsas</b></td><td>${badge(s, level[s])}</td><td class="mut">${ago(seedAt() - (i + 1) * 3600000)}</td></tr>`))}`)}${card(`<div class="between"><div><h3>Lanzar Convocatoria a Donantes</h3><small class="mut">${get().campaign ? `Campaña activa • ${get().campaign.blood.join(', ')} • ${get().campaign.notified} donantes notificados` : 'Alerta push a donantes del grupo en escasez'}</small></div>${get().campaign ? '<button class="btn ghost sm" data-act="endCampaign">Finalizar campaña</button>' : '<button class="btn sm" data-act="startCampaign">Iniciar Campaña de Alerta</button>'}</div>`)}</div><div>${card(`<h3>Solicitudes Entrantes</h3><div class="stack" style="margin-top:10px">${(() => { const r = get().req; if (!r || ['cancelada', 'cerrada'].includes(r.status)) return ''; const lab = { buscando: [r.lastDenied ? 'BUSCANDO OTRO DONANTE' : 'BUSCANDO', 'red'], esperando: ['DONANTE ACEPTÓ', 'warn'], programada: ['CITA PROGRAMADA', 'warn'], completada: ['DONACIÓN COMPLETA', 'ok'] }[r.status] || ['EN CURSO', '']; return `<div class="inc"><span class="badge ${lab[1]}">${lab[0]}</span><b>${esc(r.hospital)} • ${esc(r.id)}</b><small>${r.units} u. ${esc(r.blood)} • ${esc(r.component)} • ${esc(r.area)}</small>${r.donor ? `<small class="mut">Donante: ${esc(shortName(r.donor.name))}${r.appt ? ' • cita ' + esc(r.appt.time) : ''}</small>` : ''}${r.lastDenied && r.status === 'buscando' ? `<small class="mut">Donante no apto: ${esc(r.lastDenied.name)} (${esc(r.lastDenied.reasons.map(reasonLabel).join('; '))}). Se está buscando otro donante.</small>` : ''}${r.patient ? `<small class="mut">Paciente: ${esc(r.patient)} • ${esc(r.hc || '')} • ${esc(r.bed || '')}</small>` : ''}${r.status === 'completada' && r.delivery === 'preparando' ? `<div class="row"><button class="btn sm" data-act="dispatch">Despachar unidad</button></div>` : r.delivery ? `<small class="mut">Traslado: ${DELIVERY[r.delivery]}${r.assignedTo ? ' • ' + esc(r.assignedTo) : ''}</small>` : ''}</div>`; })()}${(() => { const r = RESERVABLE[0], held = (get().reserved || []).includes(r.id); return `<div class="inc"><span class="badge ${held ? 'ok' : 'red'}">${held ? 'RESERVADA' : 'URGENTE'}</span><b>${r.hospital}</b><small>Reclama: ${r.units} unidades ${r.blood} (${r.reason})</small><div class="row">${held ? `<button class="btn ghost sm" data-act="releaseReq" data-id="${r.id}">Liberar reserva</button>` : `<button class="btn sm" data-act="reserveReq" data-id="${r.id}">Aceptar y Preparar</button>`}<button class="btn ghost sm" data-act="detailReq" data-id="${r.id}">Ver Detalles</button></div></div>`; })()}<div class="inc"><span class="badge warn">En revisión</span><b>Hospital Central del Valle</b><small>Necesita: 2 unidades A+</small></div><div class="inc"><span class="badge">Programada</span><b>Clínica Santa María</b><small>Necesita: 6 unidades B+</small></div></div>`)}</div></div>
+      return `<div class="between"><div><h1>Banco de Sangre Central</h1><p class="mut">Panel de Control e Inventario de Cámaras Frigoríficas</p></div><small class="mut">${date()}</small></div><div class="grid kpi" style="margin:16px 0">${[['Unidades totales', totalUnits, '▲ +12 hoy', 'ok'], ['Solicitudes pendientes', 5, 'En espera', 'warn'], ['Alertas críticas', stockNow().filter(([, , st]) => st === 'CRÍTICO').length, 'CRÍTICO', 'red'], ['Donaciones hoy', get().appts.filter((a) => a.state === 'Completada').length + 16, 'Meta: 25', '']].map(([l, n, b, c]) => card(`<small class="mut">${l}</small><h1>${n}</h1>${badge(b, c)}`)).join('')}</div><div class="split"><div>${card(`<div class="between"><div><h3>Matriz de Stock — Cámaras Frigoríficas</h3><small class="mut">Monitor de temperatura y reservas por grupo</small></div>${badge('• Tiempo real', 'ok')}</div>${table(['Grupo', 'Bolsas disponibles', 'Estado', 'Actualización'], stockNow().map(([g, n, s], i) => `<tr><td>${chip(g, s === 'CRÍTICO' ? 'red' : '')}</td><td><b>${n} bolsas</b></td><td>${badge(s, level[s])}</td><td class="mut">${ago(seedAt() - (i + 1) * 3600000)}</td></tr>`))}`)}${card(`<div class="between"><div><h3>Lanzar Convocatoria a Donantes</h3><small class="mut">${get().campaign ? `Campaña activa • ${get().campaign.blood.join(', ')} • ${get().campaign.notified} donantes notificados` : 'Alerta push a donantes del grupo en escasez'}</small></div>${get().campaign ? '<button class="btn ghost sm" data-act="endCampaign">Finalizar campaña</button>' : '<button class="btn sm" data-act="startCampaign">Iniciar Campaña de Alerta</button>'}</div>`)}</div><div>${card(`<h3>Solicitudes Entrantes</h3><div class="stack" style="margin-top:10px">${(() => {
+  const activeReqs = (get().requests || [get().req].filter(Boolean)).filter((r) => !['cancelada', 'cerrada'].includes(r.status));
+  if (!activeReqs.length) return '<p class="mut center" style="padding:10px 0">Sin solicitudes de emergencia activas.</p>';
+  return activeReqs.map((r) => {
+    const lab = { buscando: [r.lastDenied ? 'BUSCANDO OTRO DONANTE' : 'BUSCANDO', 'red'], esperando: ['DONANTE ACEPTÓ', 'warn'], programada: ['CITA PROGRAMADA', 'warn'], completada: ['DONACIÓN COMPLETA', 'ok'] }[r.status] || ['EN CURSO', ''];
+    return `<div class="inc"><div class="between"><span class="badge ${lab[1]}">${lab[0]}</span>${chip(r.blood, r.priority === 'CRÍTICA' ? 'red' : '')}</div><b>${esc(r.hospital || 'Hospital General')} • ${esc(r.id)}</b><small>${r.units} u. ${esc(r.blood)} • ${esc(r.component || '')} • ${esc(r.area || '')}</small>${r.donor ? `<small class="mut">Donante: ${esc(shortName(r.donor.name))}${r.appt ? ' • cita ' + esc(r.appt.time) : ''}</small>` : ''}${r.lastDenied && r.status === 'buscando' ? `<small class="mut">Donante no apto: ${esc(r.lastDenied.name)} (${esc(r.lastDenied.reasons.map(reasonLabel).join('; '))}). Se está buscando otro donante.</small>` : ''}${r.patient ? `<small class="mut">Paciente: ${esc(r.patient)} • ${esc(r.hc || '')} • ${esc(r.bed || '')}</small>` : ''}${r.status === 'completada' && r.delivery === 'preparando' ? `<div class="row" style="margin-top:6px"><button class="btn sm" data-act="dispatch" data-id="${r.id}">Despachar unidad</button></div>` : r.delivery ? `<small class="mut">Traslado: ${DELIVERY[r.delivery]}${r.assignedTo ? ' • ' + esc(r.assignedTo) : ''}</small>` : ''}</div>`;
+  }).join('');
+})()}${(() => { const r = RESERVABLE[0], held = (get().reserved || []).includes(r.id); return `<div class="inc"><span class="badge ${held ? 'ok' : 'red'}">${held ? 'RESERVADA' : 'URGENTE'}</span><b>${r.hospital}</b><small>Reclama: ${r.units} unidades ${r.blood} (${r.reason})</small><div class="row">${held ? `<button class="btn ghost sm" data-act="releaseReq" data-id="${r.id}">Liberar reserva</button>` : `<button class="btn sm" data-act="reserveReq" data-id="${r.id}">Aceptar y Preparar</button>`}<button class="btn ghost sm" data-act="detailReq" data-id="${r.id}">Ver Detalles</button></div></div>`; })()}<div class="inc"><span class="badge warn">En revisión</span><b>Hospital Central del Valle</b><small>Necesita: 2 unidades A+</small></div><div class="inc"><span class="badge">Programada</span><b>Clínica Santa María</b><small>Necesita: 6 unidades B+</small></div></div>`)}</div></div>
 <div class="card full" id="secInventory" role="region" aria-label="Gestión de inventario de unidades y caducidades" style="margin-top:20px">
   <div class="between" style="flex-wrap:wrap;gap:12px;margin-bottom:14px">
     <div>
@@ -917,3 +1030,673 @@ export const overrides = {
     render: () => `<h1>Reportes — Historial de Trazabilidad</h1><p class="mut" style="margin-bottom:16px">Trazabilidad legal y médica de cada unidad procesada</p><div class="split rev">${card(`<h3>Registros de Trazabilidad Activa</h3>${table(['ID Bolsa', 'Grupo', 'Extracción', 'Pruebas (VIH/HEP/SIF)', 'Hospital destino', 'Firma digital'], [['#B-91024', 'O+', '12 Ene 2026', 'Hosp. San Rafael', 'Dr. Torres'], ['#B-91025', 'A-', '12 Ene 2026', 'Clín. Santa María', 'Dra. Okonkwo'], ['#B-91028', 'B+', '13 Ene 2026', 'Hosp. del Valle', 'Dr. Torres'], ['#B-91030', 'O-', '13 Ene 2026', 'Hosp. San Rafael', 'Dra. Okonkwo'], ['#B-91032', 'AB+', '14 Ene 2026', 'Hosp. Ángeles', 'Dr. Torres'], ['#B-91039', 'O+', '14 Ene 2026', 'Hosp. Regional', 'Dr. Torres']].map(([i, g, d, h, f]) => `<tr><td class="redtxt"><b>${i}</b></td><td><b>${g}</b></td><td>${d}</td><td>${badge('NEGATIVO ✓', 'ok')}</td><td>${h}</td><td>✍ ${f}</td></tr>`), 'h3 h6')}<div class="between" style="margin-top:12px"><small class="mut">Normativa: NOM-253-SSA1-2012</small><div class="row" style="flex:none"><button class="btn sm" data-act="exportPdf">Exportar PDF</button><button class="btn ghost sm" data-act="exportCsv">Exportar CSV</button></div></div>`)}${card(`<h3>Resumen de Periodo</h3><div class="stack" style="margin-top:10px">${[['BOLSAS PROCESADAS', '248 unidades', ''], ['TASA DE DESCARTE', '2.4%', 'redtxt'], ['HOSPITALES ATENDIDOS', '14 centros', ''], ['PROMEDIO DE ENTREGA', '28 minutos', 'oktxt']].map(([l, v, c]) => `<div class="stat left"><small class="lbl">${l}</small><h2 class="${c}">${v}</h2></div>`).join('')}</div>`)}</div>`,
   },
 };
+
+export function openPasswordRecoveryModal(options = {}) {
+  const prev = document.activeElement;
+  const m = document.createElement('div');
+  m.className = 'modal';
+  m.setAttribute('role', 'dialog');
+  m.setAttribute('aria-modal', 'true');
+  m.setAttribute('aria-labelledby', 'modalRecoverTitle');
+
+  let step = 1;
+  let targetUser = null;
+  let simCode = '';
+  let pwCleanup = null;
+
+  function close() {
+    if (pwCleanup) { pwCleanup(); pwCleanup = null; }
+    document.removeEventListener('keydown', onKey, true);
+    m.remove();
+    if (prev && prev.isConnected) prev.focus();
+  }
+
+  const onKey = (e) => {
+    if (e.key === 'Escape') { e.stopPropagation(); close(); return; }
+    if (e.key !== 'Tab') return;
+    const focusable = [...m.querySelectorAll('input:not([type="hidden"]),button,select,textarea,[tabindex="0"]')].filter(
+      (el) => !el.disabled && el.offsetParent !== null
+    );
+    if (!focusable.length) return;
+    const first = focusable[0], last = focusable[focusable.length - 1];
+    if (e.shiftKey && document.activeElement === first) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && document.activeElement === last) {
+      e.preventDefault();
+      first.focus();
+    }
+  };
+
+  m.addEventListener('click', (e) => {
+    if (e.target === m || e.target.closest('[data-x]')) {
+      close();
+    }
+  });
+
+  document.addEventListener('keydown', onKey, true);
+
+  function render() {
+    if (pwCleanup) { pwCleanup(); pwCleanup = null; }
+
+    if (step === 1) {
+      const defaultEmail = options.prefillEmail || document.getElementById('email')?.value.trim() || '';
+      m.innerHTML = `
+        <div class="card modal-recover">
+          <div class="between" style="margin-bottom:14px">
+            <div>
+              <h2 id="modalRecoverTitle" style="font-size:20px;color:var(--txt)">Recuperar contraseña</h2>
+              <small class="mut">Paso 1 de 3: Identificación de cuenta</small>
+            </div>
+            <button class="btn ghost sm" data-x aria-label="Cerrar modal" style="min-width:44px;min-height:44px">${icon('x', 18)}</button>
+          </div>
+          <form id="formRecover1" class="stack" novalidate>
+            <p class="mut" style="font-size:14px;line-height:1.4">
+              Ingresa el correo electrónico institucional o personal asociado a tu cuenta de VitalRed para verificar tu identidad.
+            </p>
+            <label class="field">
+              <span>Correo o Cédula profesional *</span>
+              <input type="text" id="recEmail" name="email" value="${esc(defaultEmail)}" required placeholder="ejemplo@vitalred.org" autocomplete="email" style="min-height:48px">
+              <small class="err" id="recEmail-err" role="alert" aria-live="polite"></small>
+            </label>
+            <div class="banner info" style="font-size:12px;margin:4px 0 10px;line-height:1.4">
+              <b>Cuentas de prueba:</b> Puedes utilizar <code>donante@vitalred.org</code>, <code>medico@vitalred.org</code>, <code>transporte@vitalred.org</code> o <code>banco@vitalred.org</code>.
+            </div>
+            <div class="row" style="margin-top:14px">
+              <button type="button" class="btn ghost" data-x style="min-height:44px">Cancelar</button>
+              <button type="submit" class="btn primary" id="btnRecSubmit1" style="min-height:44px">Enviar código</button>
+            </div>
+          </form>
+        </div>
+      `;
+
+      const form = m.querySelector('#formRecover1');
+      const input = m.querySelector('#recEmail');
+      const err = m.querySelector('#recEmail-err');
+
+      form.addEventListener('submit', (e) => {
+        e.preventDefault();
+        err.textContent = '';
+        input.classList.remove('bad');
+        const val = input.value.trim().toLowerCase();
+        if (!val) {
+          input.classList.add('bad');
+          err.textContent = 'Por favor ingresa tu correo electrónico o cédula.';
+          input.focus();
+          return;
+        }
+
+        const users = get().users || [];
+        const found = users.find((u) => {
+          const uEmail = (u.email || '').trim().toLowerCase();
+          const uCed = (u.cedula || '').trim().toLowerCase();
+          return uEmail === val || uCed === val;
+        });
+
+        if (!found) {
+          input.classList.add('bad');
+          err.textContent = 'No se encontró ninguna cuenta registrada con este correo o cédula.';
+          input.focus();
+          return;
+        }
+
+        targetUser = found;
+        simCode = String(Math.floor(100000 + Math.random() * 900000));
+        toast(`Código de verificación enviado: ${simCode}`, 'ok');
+        step = 2;
+        render();
+      });
+
+      setTimeout(() => input.focus(), 50);
+    } else if (step === 2) {
+      m.innerHTML = `
+        <div class="card modal-recover">
+          <div class="between" style="margin-bottom:14px">
+            <div>
+              <h2 id="modalRecoverTitle" style="font-size:20px;color:var(--txt)">Verificar código</h2>
+              <small class="mut">Paso 2 de 3: Código de seguridad temporal</small>
+            </div>
+            <button class="btn ghost sm" data-x aria-label="Cerrar modal" style="min-width:44px;min-height:44px">${icon('x', 18)}</button>
+          </div>
+          <form id="formRecover2" class="stack" novalidate>
+            <p class="mut" style="font-size:14px">
+              Ingresa el código de 6 dígitos enviado para <b>${esc(targetUser.name)}</b> (<code>${esc(targetUser.email)}</code>).
+            </p>
+            <div class="banner info" role="region" aria-label="Código de demostración" style="border-left:4px solid var(--blue);background:color-mix(in srgb,var(--blue) 12%,var(--card));padding:12px;border-radius:8px">
+              <div style="font-size:12px;font-weight:700;color:var(--blue-text);margin-bottom:4px">CÓDIGO DE SEGURIDAD SIMULADO</div>
+              <div style="font-size:22px;letter-spacing:4px;font-family:monospace;font-weight:800;color:var(--txt)">${simCode}</div>
+              <small class="mut" style="display:block;margin-top:4px">En este prototipo simulado, el código temporal de un solo uso se genera aquí.</small>
+            </div>
+            <label class="field">
+              <span>Código de 6 dígitos *</span>
+              <input type="text" id="recCode" name="code" required maxlength="6" pattern="[0-9]{6}" placeholder="${simCode}" autocomplete="one-time-code" style="min-height:48px;font-size:20px;letter-spacing:4px;text-align:center">
+              <small class="err" id="recCode-err" role="alert" aria-live="polite"></small>
+            </label>
+            <div class="between" style="margin-top:6px">
+              <button type="button" class="btn-link" id="btnResendCode" style="min-height:44px;min-width:44px;padding:0">
+                Reenviar código
+              </button>
+              <button type="button" class="btn-link" id="btnBackStep1" style="min-height:44px;min-width:44px;padding:0">
+                Cambiar correo
+              </button>
+            </div>
+            <div class="row" style="margin-top:14px">
+              <button type="button" class="btn ghost" data-x style="min-height:44px">Cancelar</button>
+              <button type="submit" class="btn primary" id="btnRecSubmit2" style="min-height:44px">Validar código</button>
+            </div>
+          </form>
+        </div>
+      `;
+
+      const form = m.querySelector('#formRecover2');
+      const input = m.querySelector('#recCode');
+      const err = m.querySelector('#recCode-err');
+
+      m.querySelector('#btnResendCode').addEventListener('click', () => {
+        simCode = String(Math.floor(100000 + Math.random() * 900000));
+        toast(`Nuevo código de verificación: ${simCode}`, 'ok');
+        render();
+      });
+
+      m.querySelector('#btnBackStep1').addEventListener('click', () => {
+        step = 1;
+        render();
+      });
+
+      form.addEventListener('submit', (e) => {
+        e.preventDefault();
+        err.textContent = '';
+        input.classList.remove('bad');
+        const codeVal = input.value.trim();
+        if (codeVal !== simCode) {
+          input.classList.add('bad');
+          err.textContent = `Código inválido. Introduce el código de 6 dígitos (${simCode}).`;
+          input.focus();
+          return;
+        }
+        step = 3;
+        render();
+      });
+
+      setTimeout(() => input.focus(), 50);
+    } else if (step === 3) {
+      m.innerHTML = `
+        <div class="card modal-recover">
+          <div class="between" style="margin-bottom:14px">
+            <div>
+              <h2 id="modalRecoverTitle" style="font-size:20px;color:var(--txt)">Nueva contraseña</h2>
+              <small class="mut">Paso 3 de 3: Requisitos de seguridad</small>
+            </div>
+            <button class="btn ghost sm" data-x aria-label="Cerrar modal" style="min-width:44px;min-height:44px">${icon('x', 18)}</button>
+          </div>
+          <form id="formRecover3" class="stack" novalidate>
+            <p class="mut" style="font-size:14px">
+              Define una nueva contraseña segura para la cuenta <b>${esc(targetUser.email)}</b>.
+            </p>
+            <label class="field" style="position:relative">
+              <span>Nueva contraseña *</span>
+              <div style="position:relative">
+                <input type="password" id="password" name="password" required autocomplete="new-password" placeholder="••••••••" style="min-height:48px;padding-right:48px">
+                <button type="button" class="eye" id="togglePw1" aria-label="Mostrar u ocultar contraseña" style="min-height:44px;min-width:44px">
+                  ${icon('eye', 20)}
+                </button>
+              </div>
+              <small class="err" id="password-err" role="alert" aria-live="polite"></small>
+            </label>
+            ${pwRules()}
+            <label class="field" style="position:relative">
+              <span>Confirmar nueva contraseña *</span>
+              <div style="position:relative">
+                <input type="password" id="confirmPassword" name="confirmPassword" required autocomplete="new-password" placeholder="••••••••" style="min-height:48px;padding-right:48px">
+                <button type="button" class="eye" id="togglePw2" aria-label="Mostrar u ocultar confirmación de contraseña" style="min-height:44px;min-width:44px">
+                  ${icon('eye', 20)}
+                </button>
+              </div>
+              <small class="err" id="confirmPassword-err" role="alert" aria-live="polite"></small>
+            </label>
+            <div class="row" style="margin-top:14px">
+              <button type="button" class="btn ghost" data-x style="min-height:44px">Cancelar</button>
+              <button type="submit" class="btn primary" id="btnRecSubmit3" style="min-height:44px">Guardar contraseña</button>
+            </div>
+          </form>
+        </div>
+      `;
+
+      pwCleanup = bindPwRules(m);
+
+      const form = m.querySelector('#formRecover3');
+      const pwInput = m.querySelector('#password');
+      const confInput = m.querySelector('#confirmPassword');
+      const pwErr = m.querySelector('#password-err');
+      const confErr = m.querySelector('#confirmPassword-err');
+
+      const setupToggle = (btnEl, inpEl) => {
+        btnEl.addEventListener('click', () => {
+          const isPw = inpEl.type === 'password';
+          inpEl.type = isPw ? 'text' : 'password';
+          btnEl.innerHTML = icon(isPw ? 'eyeoff' : 'eye', 20);
+        });
+      };
+      setupToggle(m.querySelector('#togglePw1'), pwInput);
+      setupToggle(m.querySelector('#togglePw2'), confInput);
+
+      form.addEventListener('submit', (e) => {
+        e.preventDefault();
+        pwErr.textContent = '';
+        confErr.textContent = '';
+        pwInput.classList.remove('bad');
+        confInput.classList.remove('bad');
+
+        const newPass = pwInput.value;
+        const confirmPass = confInput.value;
+
+        const issues = passwordIssues(newPass);
+        if (issues.length > 0) {
+          pwInput.classList.add('bad');
+          pwErr.textContent = `La contraseña debe cumplir: ${issues.join(', ')}.`;
+          pwInput.focus();
+          return;
+        }
+
+        if (newPass !== confirmPass) {
+          confInput.classList.add('bad');
+          confErr.textContent = 'Las contraseñas no coinciden. Verifícalas.';
+          confInput.focus();
+          return;
+        }
+
+        const res = resetUserPassword(targetUser.email, newPass);
+        if (!res.ok) {
+          pwInput.classList.add('bad');
+          pwErr.textContent = res.error || 'Error al actualizar la contraseña.';
+          return;
+        }
+
+        step = 4;
+        render();
+      });
+
+      setTimeout(() => pwInput.focus(), 50);
+    } else if (step === 4) {
+      m.innerHTML = `
+        <div class="card modal-recover">
+          <div class="center" style="padding:12px 0">
+            <div style="width:56px;height:56px;border-radius:50%;background:color-mix(in srgb,var(--ok) 18%,transparent);color:var(--ok-text);display:grid;place-items:center;margin:0 auto 12px">
+              ${icon('check', 32)}
+            </div>
+            <h2 id="modalRecoverTitle" style="font-size:22px;color:var(--txt);margin-bottom:8px">¡Contraseña restablecida!</h2>
+            <p class="mut" style="font-size:14px;max-width:380px;margin:0 auto 16px;line-height:1.4">
+              La contraseña para <b>${esc(targetUser.email)}</b> ha sido actualizada exitosamente. Ya puedes iniciar sesión con tus nuevas credenciales.
+            </p>
+            <button type="button" class="btn primary" id="btnFinishRecover" style="min-height:48px">
+              Ir a Iniciar sesión
+            </button>
+          </div>
+        </div>
+      `;
+
+      const finishBtn = m.querySelector('#btnFinishRecover');
+      finishBtn.addEventListener('click', () => {
+        close();
+        const loginEmail = document.getElementById('email');
+        const loginPass = document.getElementById('password');
+        if (loginEmail) {
+          loginEmail.value = targetUser.email;
+          if (loginPass) {
+            loginPass.value = '';
+            setTimeout(() => loginPass.focus(), 50);
+          }
+        }
+        toast('Puedes ingresar con tu nueva contraseña', 'ok');
+      });
+
+      setTimeout(() => finishBtn.focus(), 50);
+    }
+  }
+
+  render();
+  document.body.append(m);
+}
+
+export function openEditProfileModal(user, onSave) {
+  if (!user) return;
+  const prev = document.activeElement;
+  const m = document.createElement('div');
+  m.className = 'modal';
+  m.setAttribute('role', 'dialog');
+  m.setAttribute('aria-modal', 'true');
+  m.setAttribute('aria-labelledby', 'modalProfileTitle');
+
+  function close() {
+    document.removeEventListener('keydown', onKey, true);
+    m.remove();
+    if (prev && prev.isConnected) prev.focus();
+  }
+
+  const onKey = (e) => {
+    if (e.key === 'Escape') { e.stopPropagation(); close(); return; }
+    if (e.key !== 'Tab') return;
+    const focusable = [...m.querySelectorAll('input:not([type="hidden"]),button,select,textarea,[tabindex="0"]')].filter(
+      (el) => !el.disabled && el.offsetParent !== null
+    );
+    if (!focusable.length) return;
+    const first = focusable[0], last = focusable[focusable.length - 1];
+    if (e.shiftKey && document.activeElement === first) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && document.activeElement === last) {
+      e.preventDefault();
+      first.focus();
+    }
+  };
+
+  m.addEventListener('click', (e) => {
+    if (e.target === m || e.target.closest('[data-x]')) {
+      close();
+    }
+  });
+
+  document.addEventListener('keydown', onKey, true);
+
+  const role = user.role || 'donor';
+  const roleName = ROLES[role] || 'Usuario';
+
+  let roleFieldsHtml = '';
+
+  if (role === 'medical') {
+    roleFieldsHtml = `
+      <label class="field field-readonly">
+        <span>Cédula profesional <span class="badge-ro">Validada institucionalmente</span></span>
+        <input type="text" value="${esc(user.cedula || 'CED-7765421')}" readonly aria-readonly="true" tabindex="-1">
+      </label>
+      <div class="row">
+        <label class="field" style="flex:1">
+          <span>Hospital de adscripción *</span>
+          <select id="profHospital" name="hospital" required>
+            ${['Hospital General', 'Hospital de Especialidades', 'Hospital Infantil', 'Clínica San Rafael', 'Banco Central'].map(
+              (h) => `<option value="${h}" ${h === (user.hospital || 'Hospital General') ? 'selected' : ''}>${h}</option>`
+            ).join('')}
+          </select>
+          <small class="err" id="profHospital-err" role="alert"></small>
+        </label>
+        <label class="field" style="flex:1">
+          <span>Turno de guardia *</span>
+          <select id="profShift" name="shift" required>
+            ${['Jornada Acumulada', 'Matutino', 'Vespertino', 'Nocturno A', 'Nocturno B'].map(
+              (s) => `<option value="${s}" ${s === (user.shift || 'Jornada Acumulada') ? 'selected' : ''}>${s}</option>`
+            ).join('')}
+          </select>
+          <small class="err" id="profShift-err" role="alert"></small>
+        </label>
+      </div>
+      <label class="field">
+        <span>Servicio / Especialidad *</span>
+        <input type="text" id="profService" name="service" value="${esc(user.service || 'Urgencias / Quirófano')}" required minlength="3" placeholder="Ej. Urgencias / Quirófano">
+        <small class="err" id="profService-err" role="alert"></small>
+      </label>
+      <div class="row">
+        <label class="field" style="flex:1">
+          <span>Teléfono de contacto *</span>
+          <input type="tel" id="profPhone" name="phone" value="${esc(user.phone || '55-4192-8830')}" required placeholder="55-1234-5678">
+          <small class="err" id="profPhone-err" role="alert"></small>
+        </label>
+        <label class="field" style="flex:1">
+          <span>Ciudad *</span>
+          <input type="text" id="profCity" name="city" value="${esc(user.city || 'Ciudad de México')}" required placeholder="Ciudad de México">
+          <small class="err" id="profCity-err" role="alert"></small>
+        </label>
+      </div>
+    `;
+  } else if (role === 'transport') {
+    roleFieldsHtml = `
+      <label class="field field-readonly">
+        <span>Licencia sanitaria / SCT <span class="badge-ro">Acreditación sanitaria oficial</span></span>
+        <input type="text" value="${esc(user.license || 'LIC-458213')}" readonly aria-readonly="true" tabindex="-1">
+      </label>
+      <div class="row">
+        <label class="field" style="flex:1">
+          <span>Unidad asignada *</span>
+          <input type="text" id="profUnit" name="unit" value="${esc(user.unit || 'AMB-014')}" required placeholder="AMB-014">
+          <small class="err" id="profUnit-err" role="alert"></small>
+        </label>
+        <label class="field" style="flex:1">
+          <span>Base operativa *</span>
+          <input type="text" id="profHospital" name="hospital" value="${esc(user.hospital || 'Banco Central')}" required placeholder="Banco Central">
+          <small class="err" id="profHospital-err" role="alert"></small>
+        </label>
+      </div>
+      <div class="row">
+        <label class="field" style="flex:1">
+          <span>Estado operativo</span>
+          <select id="profOpStatus" name="operatorStatus">
+            ${['En servicio', 'En descanso', 'Fuera de turno'].map(
+              (st) => `<option value="${st}" ${st === (user.operatorStatus || 'En servicio') ? 'selected' : ''}>${st}</option>`
+            ).join('')}
+          </select>
+        </label>
+        <label class="field" style="flex:1">
+          <span>Turno habitual</span>
+          <select id="profShift" name="shift">
+            ${['Matutino', 'Vespertino', 'Nocturno', '24x48'].map(
+              (s) => `<option value="${s}" ${s === (user.shift || 'Matutino') ? 'selected' : ''}>${s}</option>`
+            ).join('')}
+          </select>
+        </label>
+      </div>
+      <div class="row">
+        <label class="field" style="flex:1">
+          <span>Teléfono de cabina / radio *</span>
+          <input type="tel" id="profPhone" name="phone" value="${esc(user.phone || '55-8392-1044')}" required placeholder="55-8392-1044">
+          <small class="err" id="profPhone-err" role="alert"></small>
+        </label>
+        <label class="field" style="flex:1">
+          <span>Ciudad *</span>
+          <input type="text" id="profCity" name="city" value="${esc(user.city || 'Ciudad de México')}" required placeholder="Ciudad de México">
+          <small class="err" id="profCity-err" role="alert"></small>
+        </label>
+      </div>
+    `;
+  } else if (role === 'bank') {
+    roleFieldsHtml = `
+      <div class="row">
+        <label class="field" style="flex:1">
+          <span>Cargo o puesto institucional *</span>
+          <input type="text" id="profPosition" name="position" value="${esc(user.position || user.cargo || 'Dirección Médica')}" required placeholder="Dirección Médica">
+          <small class="err" id="profPosition-err" role="alert"></small>
+        </label>
+        <label class="field" style="flex:1">
+          <span>Institución / Banco *</span>
+          <input type="text" id="profHospital" name="hospital" value="${esc(user.hospital || 'Banco Central')}" required placeholder="Banco Central">
+          <small class="err" id="profHospital-err" role="alert"></small>
+        </label>
+      </div>
+      <div class="row">
+        <label class="field" style="flex:1">
+          <span>Turno operativo *</span>
+          <select id="profShift" name="shift" required>
+            ${['Matutino', 'Vespertino', 'Nocturno', 'Mixto'].map(
+              (s) => `<option value="${s}" ${s === (user.shift || 'Matutino') ? 'selected' : ''}>${s}</option>`
+            ).join('')}
+          </select>
+        </label>
+        <label class="field" style="flex:1">
+          <span>Teléfono directo *</span>
+          <input type="tel" id="profPhone" name="phone" value="${esc(user.phone || '55-6671-9200')}" required placeholder="55-6671-9200">
+          <small class="err" id="profPhone-err" role="alert"></small>
+        </label>
+      </div>
+      <label class="field">
+        <span>Ciudad *</span>
+        <input type="text" id="profCity" name="city" value="${esc(user.city || 'Ciudad de México')}" required placeholder="Ciudad de México">
+        <small class="err" id="profCity-err" role="alert"></small>
+      </label>
+    `;
+  } else {
+    // donor
+    roleFieldsHtml = `
+      <div class="row">
+        <label class="field field-readonly" style="flex:1">
+          <span>Grupo sanguíneo <span class="badge-ro">Verificado en laboratorio</span></span>
+          <input type="text" value="${esc(user.blood || 'O+')}" readonly aria-readonly="true" tabindex="-1">
+        </label>
+        <label class="field field-readonly" style="flex:1">
+          <span>Estado de aptitud</span>
+          <input type="text" value="${esc(user.status || 'Apto para donar')}" readonly aria-readonly="true" tabindex="-1">
+        </label>
+      </div>
+      <div class="row">
+        <label class="field" style="flex:1">
+          <span>Teléfono de contacto *</span>
+          <input type="tel" id="profPhone" name="phone" value="${esc(user.phone || '55-2345-6789')}" required placeholder="55-2345-6789">
+          <small class="err" id="profPhone-err" role="alert"></small>
+        </label>
+        <label class="field" style="flex:1">
+          <span>Ciudad de residencia *</span>
+          <input type="text" id="profCity" name="city" value="${esc(user.city || 'Ciudad de México')}" required placeholder="Ciudad de México">
+          <small class="err" id="profCity-err" role="alert"></small>
+        </label>
+      </div>
+      <div class="banner info" style="font-size:12px;margin-top:6px">
+        Para actualizar tus factores de salud o pre-triaje médico NOM-253, utiliza la opción <b>Actualizar datos médicos</b> desde la pantalla principal de perfil.
+      </div>
+    `;
+  }
+
+  m.innerHTML = `
+    <div class="card modal-profile">
+      <div class="between" style="margin-bottom:14px">
+        <div>
+          <h2 id="modalProfileTitle" style="font-size:20px;color:var(--txt)">Editar Perfil</h2>
+          <small class="mut">${roleName} · VitalRed</small>
+        </div>
+        <button class="btn ghost sm" data-x aria-label="Cerrar modal" style="min-width:44px;min-height:44px">${icon('x', 18)}</button>
+      </div>
+
+      <form id="formEditProfile" class="stack" novalidate>
+        <label class="field">
+          <span>Nombre completo *</span>
+          <input type="text" id="profName" name="name" value="${esc(user.name)}" required minlength="3" placeholder="Nombre completo" autocomplete="name" style="min-height:48px">
+          <small class="err" id="profName-err" role="alert" aria-live="polite"></small>
+        </label>
+
+        <label class="field field-readonly">
+          <span>Correo electrónico institucional / cuenta <span class="badge-ro">Identificador único</span></span>
+          <input type="email" value="${esc(user.email)}" readonly aria-readonly="true" tabindex="-1" style="min-height:48px">
+          <small class="mut" style="font-size:11px;display:block;margin-top:2px">El correo es el identificador principal de inicio de sesión.</small>
+        </label>
+
+        ${roleFieldsHtml}
+
+        <div class="row" style="margin-top:16px">
+          <button type="button" class="btn ghost" data-x style="min-height:44px">Cancelar</button>
+          <button type="submit" class="btn primary" id="btnSaveProfile" style="min-height:44px">Guardar cambios</button>
+        </div>
+      </form>
+    </div>
+  `;
+
+  const form = m.querySelector('#formEditProfile');
+
+  form.addEventListener('submit', (e) => {
+    e.preventDefault();
+
+    m.querySelectorAll('.err').forEach((el) => { el.textContent = ''; });
+    m.querySelectorAll('input.bad, select.bad').forEach((el) => { el.classList.remove('bad'); });
+
+    let hasError = false;
+
+    const nameInput = m.querySelector('#profName');
+    const nameVal = nameInput.value.trim();
+    if (!nameVal || nameVal.length < 3) {
+      nameInput.classList.add('bad');
+      m.querySelector('#profName-err').textContent = 'El nombre debe tener al menos 3 caracteres.';
+      if (!hasError) { nameInput.focus(); hasError = true; }
+    }
+
+    const phoneInput = m.querySelector('#profPhone');
+    if (phoneInput) {
+      const phoneVal = phoneInput.value.trim();
+      const digitsOnly = phoneVal.replace(/\D/g, '');
+      if (!phoneVal || digitsOnly.length < 8) {
+        phoneInput.classList.add('bad');
+        m.querySelector('#profPhone-err').textContent = 'Introduce un teléfono de contacto válido (mín. 8 dígitos).';
+        if (!hasError) { phoneInput.focus(); hasError = true; }
+      }
+    }
+
+    if (role === 'medical') {
+      const servInput = m.querySelector('#profService');
+      if (servInput && !servInput.value.trim()) {
+        servInput.classList.add('bad');
+        m.querySelector('#profService-err').textContent = 'El servicio o especialidad es obligatorio.';
+        if (!hasError) { servInput.focus(); hasError = true; }
+      }
+    } else if (role === 'transport') {
+      const unitInput = m.querySelector('#profUnit');
+      if (unitInput && !unitInput.value.trim()) {
+        unitInput.classList.add('bad');
+        m.querySelector('#profUnit-err').textContent = 'La unidad asignada es obligatoria.';
+        if (!hasError) { unitInput.focus(); hasError = true; }
+      }
+      const hospInput = m.querySelector('#profHospital');
+      if (hospInput && !hospInput.value.trim()) {
+        hospInput.classList.add('bad');
+        m.querySelector('#profHospital-err').textContent = 'La base operativa es obligatoria.';
+        if (!hasError) { hospInput.focus(); hasError = true; }
+      }
+    } else if (role === 'bank') {
+      const posInput = m.querySelector('#profPosition');
+      if (posInput && !posInput.value.trim()) {
+        posInput.classList.add('bad');
+        m.querySelector('#profPosition-err').textContent = 'El cargo institucional es obligatorio.';
+        if (!hasError) { posInput.focus(); hasError = true; }
+      }
+      const hospInput = m.querySelector('#profHospital');
+      if (hospInput && !hospInput.value.trim()) {
+        hospInput.classList.add('bad');
+        m.querySelector('#profHospital-err').textContent = 'La institución es obligatoria.';
+        if (!hasError) { hospInput.focus(); hasError = true; }
+      }
+    }
+
+    if (hasError) return;
+
+    const patch = { name: nameVal };
+    if (phoneInput) patch.phone = phoneInput.value.trim();
+    const cityInput = m.querySelector('#profCity');
+    if (cityInput) patch.city = cityInput.value.trim();
+
+    if (role === 'medical') {
+      patch.hospital = m.querySelector('#profHospital').value;
+      patch.shift = m.querySelector('#profShift').value;
+      patch.service = m.querySelector('#profService').value.trim();
+    } else if (role === 'transport') {
+      patch.unit = m.querySelector('#profUnit').value.trim();
+      patch.hospital = m.querySelector('#profHospital').value.trim();
+      patch.operatorStatus = m.querySelector('#profOpStatus').value;
+      patch.shift = m.querySelector('#profShift').value;
+    } else if (role === 'bank') {
+      const posVal = m.querySelector('#profPosition').value.trim();
+      patch.position = posVal;
+      patch.cargo = posVal;
+      patch.hospital = m.querySelector('#profHospital').value.trim();
+      patch.shift = m.querySelector('#profShift').value;
+    }
+
+    const success = updateUserProfile(user.email, patch);
+    if (!success) {
+      toast('Error al actualizar el perfil en el almacenamiento.', 'err');
+      return;
+    }
+
+    toast('Perfil actualizado correctamente', 'ok');
+    close();
+    onSave?.();
+  });
+
+  document.body.append(m);
+  setTimeout(() => {
+    const firstInput = m.querySelector('#profName');
+    firstInput?.focus();
+  }, 50);
+}
