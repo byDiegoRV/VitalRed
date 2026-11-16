@@ -193,7 +193,7 @@ export const transportScreens = {
         const d = root.querySelector('#tDist'), e = root.querySelector('#tEta');
         if (d) d.textContent = fmtKm(r.km) + (r.real ? '' : ' (aprox.)');
         if (e) e.textContent = fmtMin(r.min);
-        set({ trip: { ...cur, distance: fmtKm(r.km), eta: fmtMin(r.min) } });
+        set({ trip: { ...cur, distance: fmtKm(r.km), eta: fmtMin(r.min) } }, { noSync: true });
       });
       return () => { dead = true; };
     }
@@ -367,7 +367,7 @@ export const transportScreens = {
         const d = root.querySelector('#tripDist'), s = root.querySelector('#routeSrc');
         if (d) d.textContent = fmtKm(r.km);
         if (s) s.textContent = r.real ? 'Ruta calculada por calles con OSRM (OpenStreetMap): distancia y tiempo reales.' : 'Sin conexión al servicio de rutas: ruta y tiempo estimados.';
-        set({ trip: { ...getTrip(), distance: fmtKm(r.km), eta: fmtMin(r.min) } });
+        set({ trip: { ...getTrip(), distance: fmtKm(r.km), eta: fmtMin(r.min) } }, { noSync: true });
         showEta();
       } });
       const i = setInterval(() => {
@@ -378,7 +378,7 @@ export const transportScreens = {
         const mode = get().simMode || 'normal';
         if (mode === 'normal') {
           const v = Math.round((4 + Math.random() * 1.2) * 10) / 10;
-          set({ temp: v });
+          set({ temp: v }, { noSync: true });
           const tBox = root.querySelector('#tempBox');
           if (tBox) tBox.textContent = v.toFixed(1) + ' °C';
           const gm = root.querySelector('#gm');
@@ -387,7 +387,7 @@ export const transportScreens = {
           if (t && t.thermalLogs) {
             const timeStr = new Date().toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' });
             t.thermalLogs.push({ time: timeStr, temp: v, status: 'NORMAL' });
-            set({ trip: t });
+            set({ trip: t }, { noSync: true });
           }
         }
       }, 3000);

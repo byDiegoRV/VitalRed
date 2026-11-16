@@ -5,6 +5,7 @@ import { DEFAULT_TRIP, getTrip, getHistory } from './screens-transport.js';
 import { passwordIssues, go, toast, confirmModal, notifModal, icon, esc, download } from './ui.js';
 import { guard } from './flow.js';
 import { stockNow, RESERVABLE, reportCsv, reportDoc, openNewBagModal, openUnitDetailModal, openPasswordRecoveryModal, openEditProfileModal } from './screens-ui.js';
+import { initFirebaseSync, syncPushState, getSyncStatus, onSyncStatusChange, openSyncModal } from './firebase-sync.js';
 
 const NAV = {
   donor: [['d/home', 'Inicio', 'home'], ['d/alert', 'Donar', 'drop'], ['d/qr', 'Citas', 'calendar'], ['d/profile', 'Perfil', 'user']],
@@ -77,6 +78,11 @@ function route() {
           <div class="logo" role="button" tabindex="0" data-go="${user ? HOME[user.role] : 'splash'}" aria-label="Ir al inicio de VitalRed"><i>${icon('drop', 18)}</i>VitalRed</div>
         </div>
         <div class="row" style="flex:none;align-items:center">
+          ${(() => {
+            const sync = getSyncStatus();
+            const labels = { online: 'En vivo', connecting: 'Conectando…', local: 'Local' };
+            return `<button class="cloud-pill ${sync.status}" data-act="openSyncModal" type="button" aria-label="Sincronización en la nube: ${labels[sync.status] || sync.status}. Sala: ${esc(sync.room)}" title="Sincronización en la nube (Sala: ${esc(sync.room)})"><span class="cloud-dot"></span><span>${labels[sync.status] || sync.status}</span></button>`;
+          })()}
           ${user ? `
             <button class="btn ghost sm notif-btn" data-act="openNotifs" aria-label="Notificaciones (${unreadCount} no leídas)">
               ${icon('bell', 18)}
@@ -224,6 +230,18 @@ const REG_RULES = {
 };
 
 const actions = {
+  openSyncModal() {
+    openSyncModal((newRoom) => {
+      toast(`Sala cambiada a "${newRoom}". Sincronizando...`);
+      initFirebaseSync((remotePayload) => {
+        if (remotePayload && typeof remotePayload === 'object') {
+          set(remotePayload, { remote: true });
+          route();
+        }
+      });
+      route();
+    });
+  },
   openProfile() {
     const u = currentUser();
     if (!u) return;
@@ -351,8 +369,17 @@ const actions = {
         content: cur.content,
         distance: cur.distance,
         eta: cur.eta,
+        reqId: cur.reqId,
+        area: cur.area,
+        bed: cur.bed,
+        priority: cur.priority,
+        requester: cur.requester,
+        status: 'disponible',
         publishedAt: Date.now()
       });
+    }
+    if (cur.reqId) {
+      patchReq({ delivery: 'despachada' }, cur.reqId);
     }
     set({ trip: null, tripQueue: queue });
     toast('Viaje liberado y devuelto a la lista de disponibles', 'ok');
@@ -490,7 +517,7 @@ const actions = {
   filterRec(el) { set({ recFilter: el.dataset.v }); route(); },
   filterDonorHist(el) { set({ donorHistFilter: el.dataset.v }); route(); },
   ackNotice(el) { const id = el.id || el.dataset?.id; set({ reviews: (get().reviews || []).map((r) => (r.id === id ? { ...r, seen: true } : r)) }); route(); },
-  dispatch() { const t = dispatchUnit(DEFAULT_TRIP); if (!t) return toast('La unidad aún no está lista para despacho', 'err'); toast(`Unidad despachada — viaje ${t.id}`); route(); },
+  dispatch(el) { const reqId = el?.dataset?.id; const t = dispatchUnit(DEFAULT_TRIP, reqId); if (!t) return toast('La unidad aún no está lista para despacho', 'err'); toast(`Unidad despachada — viaje ${t.id}`); route(); },
   say(el) { toast(el.dataset.msg); },
   submitTriage() { set({ triageAns: [0, 1, 2, 3, 4].map((i) => sel('t' + i)) }); go('d/review'); },
   confirmTriage() { const pass = get().triageAns.every((v, i) => v === ['no', 'no', 'no', 'yes', 'yes'][i]); set({ triage: pass, inFlow: pass ? get().inFlow : false }); go(pass ? 'd/schedule' : 'd/rejected'); },
@@ -572,6 +599,10 @@ const actions = {
       const prev = activeReq() || get().req, prevAppts = get().appts, prevMy = get().myAppt;
       if (prev.donor) set({ inFlow: false, triage: null, triageAns: null, myAppt: null, appts: get().appts.filter((a) => !prev.appt || a.id !== prev.appt.id) });
       patchReq({ status: 'cancelada' }, prev.id);
+      if (prev.id) {
+        const cleanQueue = (get().tripQueue || []).filter((q) => q.reqId !== prev.id);
+        set({ tripQueue: cleanQueue });
+      }
       const remainingActive = (get().requests || []).filter((r) => r.id !== prev.id && !['cancelada', 'cerrada'].includes(r.status));
       if (remainingActive.length) {
         set({ activeReqId: remainingActive[0].id, req: remainingActive[0] });
@@ -642,7 +673,7 @@ const actions = {
     const t = getTrip(), temp = get().temp, now = Date.now();
     const finalTrip = { ...t, status: 'entregada', temp: temp.toFixed(1) + ' °C', ok: temp <= 6, deliveredAt: now };
     set({ activeLogbook: finalTrip, tripHistory: [{ id: t.id, date: fmtDateTime(now), at: now, origin: t.origin, dest: t.dest, dur: t.eta || '—', temp: temp.toFixed(1) + ' °C', ok: temp <= 6, photoOrigin: t.photoOrigin, photoDelivery: t.photoDelivery, thermalLogs: t.thermalLogs, startedAt: t.startedAt, deliveredAt: now, content: t.content }, ...getHistory()], trip: null, temp: 4.2 });
-    if (t.reqId && get().req?.id === t.reqId) patchReq({ delivery: 'entregada', deliveredAt: new Date(now).toISOString() });
+    if (t.reqId) patchReq({ delivery: 'entregada', deliveredAt: new Date(now).toISOString() }, t.reqId);
     toast('Entrega finalizada y bitácora auditada generada');
     go('t/logbook');
   },
@@ -654,7 +685,7 @@ const actions = {
   },
   printLogbook() { window.print(); },
   tripCustody() { setTrip('custodia'); },
-  tripRoute() { setTrip('transito'); const t = getTrip(); if (t?.reqId && get().req?.id === t.reqId) patchReq({ delivery: 'en_ruta' }); },
+  tripRoute() { setTrip('transito'); const t = getTrip(); if (t?.reqId) patchReq({ delivery: 'en_ruta' }, t.reqId); },
   newTrip() { set({ tripQueue: [...(get().tripQueue || []), demoTrip(DEFAULT_TRIP)] }); toast('Viaje de demostración publicado'); route(); },
   takeTrip(el) { const t = takeTripDomain(el.dataset.id, currentUser()); if (!t) return toast('No se pudo tomar el viaje: termina primero el viaje actual', 'err'); toast(`Viaje ${t.id} asignado a ti`); route(); },
   simStage() {
@@ -769,3 +800,46 @@ document.addEventListener('submit', (e) => {
 
 addEventListener('hashchange', route);
 route();
+
+if (typeof window !== 'undefined') {
+  window.__vitalred_on_local_change = (state) => {
+    syncPushState(state);
+  };
+
+  onSyncStatusChange(() => {
+    const pill = document.querySelector('.cloud-pill');
+    if (pill) {
+      const sync = getSyncStatus();
+      const labels = { online: 'En vivo', connecting: 'Conectando…', local: 'Local' };
+      pill.className = `cloud-pill ${sync.status}`;
+      pill.title = `Sincronización en la nube (Sala: ${sync.room})`;
+      pill.setAttribute('aria-label', `Sincronización en la nube: ${labels[sync.status] || sync.status}. Sala: ${sync.room}`);
+      pill.innerHTML = `<span class="cloud-dot"></span><span>${labels[sync.status] || sync.status}</span>`;
+    }
+  });
+
+  initFirebaseSync((remotePayload) => {
+    if (remotePayload && typeof remotePayload === 'object') {
+      const curPath = parseHash().path;
+      const curTrip = getTrip();
+
+      set(remotePayload, { remote: true });
+
+      // Si el transportista está activamente en la pantalla de ruta (t/transit):
+      // No desmontar el mapa de Leaflet ni reiniciar el contador si el viaje sigue activo en la misma etapa
+      if (curPath === 't/transit') {
+        const newTrip = getTrip();
+        if (newTrip && curTrip && newTrip.id === curTrip.id && newTrip.status === curTrip.status) {
+          return;
+        }
+      }
+
+      // Evitar re-renderizado destructivo si el usuario está interactuando con un modal o input
+      if (document.querySelector('.modal') || document.activeElement?.matches?.('input:focus, select:focus, textarea:focus')) {
+        return;
+      }
+
+      route();
+    }
+  });
+}
