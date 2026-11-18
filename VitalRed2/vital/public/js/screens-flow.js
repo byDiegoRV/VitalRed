@@ -1,13 +1,13 @@
-import { get, set, currentUser } from './store.js';
+import { get, set, currentUser, normEmail } from './store.js';
 import { esc } from './ui.js';
 import { BANK } from './maps.js';
-import { activeReq, compatible, routeKm, historyOf, fmtDate, nextEligible, daysUntil, COMPONENTS, AREAS, HOSPITAL_LIST, DIAGNOSES, slotsFromNow, attemptsOf, statusOf, deferred, reasonLabel, fmtDateTime, hhmm } from './domain.js';
+import { activeReq, donorReqFor, compatible, routeKm, historyOf, fmtDate, nextEligible, daysUntil, COMPONENTS, AREAS, HOSPITAL_LIST, DIAGNOSES, slotsFromNow, attemptsOf, statusOf, deferred, reasonLabel, fmtDateTime, hhmm } from './domain.js';
 import { pwRules, bindPwRules, btn, card, field, toggle, flow, stepper, qrPattern, statusScreen, icon, badge, emptyState } from './ui.js';
 
-const YN = [['yes', 'S '], ['no', 'NO']];
+const YN = [['yes', 'SÍ'], ['no', 'NO']];
 const TRIAGE = ['¿Has tomado antibióticos, aspirinas o antiinflamatorios durante los últimos 7 días?', '¿Presentas fiebre, gripe o malestar en este momento?', '¿Has ingerido alcohol o sustancias en las últimas 48 horas?', '¿Cuentas con un ayuno de al menos 4 horas y has ingerido líquidos hoy?', '¿Dormiste al menos 6 horas anoche?'];
 const RISKS = ['¿Padeces o has padecido Hepatitis B/C, VIH, Chagas o Sífilis?', '¿Tatuajes, piercings o acupuntura en los últimos 12 meses?', '¿Cirugías mayores o transfusiones en los últimos 12 meses?'];
-const LABEL = { f: 'Femenino', m: 'Masculino', o: 'Otro', minor: 'Menor de 18', adult: '18–65 años', senior: 'Mayor de 65', low: 'Menos de 50 kg', ok: '50 kg o más', yes: 'S ', no: 'NO' };
+const LABEL = { f: 'Femenino', m: 'Masculino', o: 'Otro', minor: 'Menor de 18', adult: '18–65 años', senior: 'Mayor de 65', low: 'Menos de 50 kg', ok: '50 kg o más', yes: 'SÍ', no: 'NO' };
 const fl = (n, label) => (get().inFlow ? flow(n, label) : '');
 const today = () => new Date().toLocaleDateString('es-MX', { day: 'numeric', month: 'long', year: 'numeric' });
 const countChecked = (root) => root.querySelectorAll('input[type=radio]:checked').length;
@@ -17,7 +17,7 @@ const registerStep = (step, d) => ({
   1: `${field('name', 'Nombre completo', 'text', 'Nombre y apellidos', d.name || '')}${field('email', 'Correo electrónico', 'email', 'tucorreo@ejemplo.com', d.email || '')}${field('password', 'Contraseña', 'password', '', d.password || '')}${pwRules()}${field('password2', 'Confirmar contraseña', 'password', '', d.password2 || '')}`,
   2: `<div><span class="mut">Género de nacimiento / registro clínico</span>${toggle('gender', [['f', 'Femenino'], ['m', 'Masculino'], ['o', 'Otro']], d.gender)}</div><div><span class="mut">Rango de edad</span>${toggle('age', [['minor', '< 18'], ['adult', '18–65'], ['senior', '> 65']], d.age)}</div><div><span class="mut">Peso corporal</span>${toggle('weight', [['low', '< 50 kg'], ['ok', '≥ 50 kg']], d.weight)}</div><label class="field"><span>Grupo sanguíneo</span><select name="blood">${['O+', 'O-', 'A+', 'A-', 'B+', 'B-', 'AB+', 'AB-'].map((b) => `<option ${d.blood === b ? 'selected' : ''}>${b}</option>`).join('')}</select></label>`,
   3: `${d.gender === 'f' ? `<div class="banner warn"><b>Salud femenina</b><p>Sección habilitada según tu género.</p></div><div><span class="mut">¿Embarazo, lactancia o parto en los últimos 6 meses?</span>${toggle('fem', YN, d.fem)}</div>` : ''}${RISKS.map((q, i) => `<div><span class="mut">${q}</span>${toggle('risk' + i, YN, d['risk' + i])}</div>`).join('')}`,
-  4: `<div class="summary">${[['Nombre', d.name], ['Correo', d.email], ['Género', LABEL[d.gender]], ['Edad', LABEL[d.age]], ['Peso', LABEL[d.weight]], ['Grupo sanguíneo', d.blood || 'O+']].map(([k, v]) => `<div class="item"><span class="mut">${k}</span><b>${v}</b></div>`).join('')}</div><label class="check"><input type="checkbox" name="terms" ${d.terms ? 'checked' : ''}> Acepto el aviso de privacidad. Este cuestionario es una preselección y no sustituye una evaluación médica.</label>`,
+  4: `<div class="summary">${[['Nombre', d.name], ['Correo', d.email], ['Género', LABEL[d.gender]], ['Edad', LABEL[d.age]], ['Peso', LABEL[d.weight]], ['Grupo sanguíneo', d.blood || 'O+']].map(([k, v]) => `<div class="item"><span class="mut">${k}</span><b>${esc(v)}</b></div>`).join('')}</div><label class="check"><input type="checkbox" name="terms" ${d.terms ? 'checked' : ''}> Acepto el aviso de privacidad. Este cuestionario es una preselección y no sustituye una evaluación médica.</label>`,
 })[step];
 
 export const flowScreens = {
@@ -33,10 +33,11 @@ export const flowScreens = {
   'd/alert': {
     role: 'donor',
     render: () => {
-      const u = currentUser(), c = get().campaign, q = activeReq(), avail = q && q.status === 'buscando' && compatible(u.blood, q.blood) && !(q.excluded || []).includes(u.email);
+      const u = currentUser(), c = get().campaign, q = donorReqFor(u), avail = q && q.status === 'buscando' && compatible(u.blood, q.blood) && !(q.excluded || []).map(normEmail).includes(normEmail(u.email));
       if (deferred(u)) return statusScreen(icon('shield', 44), 'Donación diferida', `Tu donación está diferida hasta el ${fmtDate(u.deferUntil)} por el resultado de tu última evaluación. Podrás volver a donar después de esa fecha.`, btn('Ver mi historial', { go: 'd/history' }));
+      if (statusOf(u) === 'Diferido temporalmente') return statusScreen(icon('shield', 44), 'No elegible temporalmente', 'Según tus datos médicos registrados (NOM-253), actualmente estás marcado como no apto para donar. Si tu situación cambió, actualiza tus datos médicos.', `${btn('Actualizar datos médicos', { go: 'd/medical' })}${btn('Volver al inicio', { go: 'd/home', v: 'ghost' })}`);
       const r = avail ? q : !q && c ? { hospital: BANK.name, blood: c.blood.join(' / '), units: null, campaign: true } : null;
-      if (!r) return statusScreen(icon('bell', 44), 'Sin alertas activas', q ? (q.status === 'buscando' ? `Hay una solicitud de ${esc(q.blood)} que no es compatible con tu grupo (${esc(u.blood)}). Te avisaremos cuando haya una para ti.` : 'La solicitud actual ya fue atendida por otro donante.') : 'Cuando un hospital lance un Código Rojo compatible contigo, aparecerá aquí.', q ? '' : btn('Recibir alerta de demostración', { act: 'demoAlert' }));
+      if (!r) return statusScreen(icon('bell', 44), 'Sin alertas activas', q ? (q.status === 'buscando' ? `Hay una solicitud de ${esc(q.blood)} que no es compatible con tu grupo (${esc(u.blood)}). Te avisaremos cuando haya una para ti.` : 'La solicitud actual ya fue atendida por otro donante.') : 'Cuando un hospital lance un Código Rojo compatible contigo, aparecerá aquí.', '');
       const km = r.campaign ? null : routeKm(r.hospital);
       return `<div class="emerg">${r.campaign ? 'CONVOCATORIA DEL BANCO' : 'ALERTA DE EMERGENCIA'}</div>${fl(1, 'RESPONDER')}${card(`<span class="chip red">${r.campaign ? 'CONVOCATORIA' : r.priority === 'CRÍTICA' ? 'CÓDIGO ROJO' : 'URGENTE'}</span><h2 style="margin-top:10px">${esc(r.hospital)}</h2><p class="mut">${r.campaign ? 'Banco de Sangre — Inventario' : `${esc(r.area)} — ${esc(r.component)}`}</p><p style="margin:8px 0"><b>${r.campaign ? 'Centro de donación: Banco de Sangre Central' : `Destino a ${km.toFixed(1)} km del banco — ${Math.max(5, Math.round((km / 30) * 60))} min`}</b></p><p>Se requiere sangre ${esc(r.blood)}${r.units ? ` (${r.units} unidad${r.units > 1 ? 'es' : ''})` : ''} con ${r.campaign ? 'prioridad alta' : 'prioridad inmediata'}.</p>`)}<div class="stack">${btn('¡Puedo donar / Aceptar!', { act: 'accept', go: 'd/triage' })}${btn('No puedo en este momento', { act: 'snooze', go: 'd/profile', v: 'ghost' })}</div>`;
     },
@@ -52,12 +53,18 @@ export const flowScreens = {
   },
   'd/schedule': {
     role: 'donor',
-    render: () => { const q = activeReq(), mine = q && q.donor?.email === currentUser().email; return `<h2 class="ptitle">Paso 3: Agendar Cita</h2>${fl(3, 'AGENDAR')}${card(`<div class="between" style="justify-content:flex-start;gap:14px"><div class="ico">${icon('hospital', 24)}</div><div><b>${BANK.name}</b><br><span class="mut">${mine ? `Para ${esc(q.hospital)}` : 'Convocatoria del banco'}</span><br><small class="mut">Av. Central 1250 — Acceso prioritario</small></div></div>`)}<small class="lbl">HOY — ${today().toUpperCase()}</small><h2 style="margin:4px 0 10px">Selecciona una hora</h2>${toggle('slot', slotsFromNow(4), get().slot, 'pills')}<div class="banner warn" style="margin-top:14px"><b>Cita prioritaria</b><p>Presenta tu pase QR al llegar. El equipo médico estará preparado.</p></div><div class="stack">${btn('Confirmar Cita Prioritaria', { act: 'confirmSlot' })}${btn('Ya no puedo donar', { act: 'declineFlow', go: 'd/profile', v: 'ghost' })}</div>`; },
+    render: () => { const u = currentUser(), q = donorReqFor(u), mine = q && normEmail(q.donor?.email) === normEmail(u.email); return `<h2 class="ptitle">Paso 3: Agendar Cita</h2>${fl(3, 'AGENDAR')}${card(`<div class="between" style="justify-content:flex-start;gap:14px"><div class="ico">${icon('hospital', 24)}</div><div><b>${BANK.name}</b><br><span class="mut">${mine ? `Para ${esc(q.hospital)}` : 'Convocatoria del banco'}</span><br><small class="mut">Av. Central 1250 — Acceso prioritario</small></div></div>`)}<small class="lbl">HOY — ${today().toUpperCase()}</small><h2 style="margin:4px 0 10px">Selecciona una hora</h2>${toggle('slot', slotsFromNow(4), get().slot, 'pills')}<div class="banner warn" style="margin-top:14px"><b>Cita prioritaria</b><p>Presenta tu pase QR al llegar. El equipo médico estará preparado.</p></div><div class="stack">${btn('Confirmar Cita Prioritaria', { act: 'confirmSlot' })}${btn('Ya no puedo donar', { act: 'declineFlow', go: 'd/profile', v: 'ghost' })}</div>`; },
   },
   'd/qr': {
     role: 'donor',
     render: () => {
-      const u = currentUser(), a = get().myAppt && get().myAppt.email === u.email ? get().myAppt : null, q = activeReq();
+      const u = currentUser();
+      const myA = get().myAppt;
+      const appts = get().appts || [];
+      const uEmail = normEmail(u?.email);
+      const matched = (myA && appts.find((x) => x.id === myA.id)) || (uEmail ? appts.find((x) => x.email && normEmail(x.email) === uEmail) : null);
+      const a = matched ? (myA ? { ...myA, ...matched } : matched) : (myA && (!myA.email || (uEmail && normEmail(myA.email) === uEmail)) ? myA : null);
+      const q = donorReqFor(u);
       if (!a) return emptyState({
         iconName: 'calendar',
         title: 'Aún no tienes citas agendadas',
@@ -65,7 +72,7 @@ export const flowScreens = {
         actionBtn: btn('Ver alertas de emergencia', { go: 'd/alert' })
       });
       if (a.state === 'Completada') return statusScreen(icon('check', 44), 'Donación completada', 'Tu donación quedó registrada en tu historial.', `${btn('Ver mi donación', { go: 'd/done' })}${btn('Ver historial', { go: 'd/history', v: 'ghost' })}`);
-      return `<h2 class="ptitle">Paso 4: Pase de Acceso</h2>${fl(4, 'PASE')}<h2 class="center" style="color:var(--ok-text)">¡Cita Confirmada!</h2><div class="qr">${qrPattern(a.id)}</div><p class="center"><small class="lbl">FOLIO DE ACCESO</small><br><b style="font-size:22px">${esc(a.id)}</b></p>${card(`<b>${BANK.name}</b><p class="mut">${q && q.donor?.email === u.email ? `Para ${esc(q.hospital)} — ` : ''}${today()} — ${esc(a.time)}</p><p class="mut">${esc(u.name)} — Tipo ${esc(u.blood || 'O+')}</p><p class="mut">Estado: <b>${a.state === 'Extracción' ? 'En extracción' : 'Esperando tu llegada'}</b></p>`)}<div class="banner info">Presenta este pase en el Banco de Sangre. El personal registrará tu donación al terminar.</div><div class="stack">${btn('Cancelar Cita', { act: 'endFlow', go: 'd/profile', v: 'ghost' })}</div>`;
+      return `<h2 class="ptitle" style="margin-bottom:8px">Paso 4: Pase de Acceso</h2>${fl(4, 'PASE')}<h2 class="center" style="color:var(--ok-text);margin:6px 0 2px">¡Cita Confirmada!</h2><div class="qr">${qrPattern(a.id)}</div><p class="center" style="margin:4px 0 8px"><small class="lbl">FOLIO DE ACCESO</small><br><b style="font-size:20px">${esc(a.id)}</b></p>${card(`<b>${BANK.name}</b><p class="mut">${q && uEmail && normEmail(q.donor?.email) === uEmail ? `Para ${esc(q.hospital)} — ` : ''}${today()} — ${esc(a.time)}</p><p class="mut">${esc(u?.name || a.name || 'Donante')} — Tipo ${esc(u?.blood || a.blood || 'O+')}</p><p class="mut">Estado: <b>${a.state === 'Extracción' ? 'En extracción' : 'Esperando tu llegada'}</b></p>`)}<div class="banner info" style="margin-bottom:8px;padding:10px 14px">Presenta este pase en el Banco de Sangre. El personal registrará tu donación al terminar.</div><div class="stack" style="margin-top:8px">${btn('Cancelar Cita', { act: 'endFlow', go: 'd/profile', v: 'ghost' })}</div>`;
     },
   },
   'd/pdf': {
@@ -126,9 +133,10 @@ export const flowScreens = {
     role: 'donor', wide: true,
     render: () => {
       const u = currentUser(), H = historyOf(u), n = H.length, A = attemptsOf(u);
-      const isDef = deferred(u);
+      const isReviewDef = deferred(u);
+      const isDef = isReviewDef || statusOf(u) === 'Diferido temporalmente';
       const next = nextEligible(u);
-      const daysLeft = isDef ? daysUntil(u.deferUntil) : daysUntil(next);
+      const daysLeft = isReviewDef ? daysUntil(u.deferUntil) : daysUntil(next);
       const when = (d) => (String(d).includes('T') ? fmtDateTime(d) : fmtDate(d));
 
       const f = get().donorHistFilter || 'all';
@@ -138,8 +146,10 @@ export const flowScreens = {
         return true;
       });
 
-      const eligibilityBanner = isDef
+      const eligibilityBanner = isReviewDef
         ? `<div class="banner warn"><div class="between"><div><b>Donación diferida temporalmente</b><p>No apto por evaluación médica previa. Próxima fecha elegible: <b>${fmtDate(u.deferUntil)}</b> (en ${daysLeft} días).</p></div>${badge('Diferido', 'warn')}</div></div>`
+        : isDef
+        ? `<div class="banner warn"><div class="between"><div><b>Donación diferida temporalmente</b><p>Según tu cuestionario médico NOM-253 actual no eres apto para donar. Actualiza tus datos médicos cuando cambie tu condición.</p></div>${badge('Diferido', 'warn')}</div></div>`
         : daysLeft > 0
         ? `<div class="banner info"><div class="between"><div><b>Próxima donación permitida en ${daysLeft} días</b><p>Por norma (NOM-253), debe haber al menos 3 meses entre extracciones. Fecha: <b>${fmtDate(next)}</b>.</p></div>${badge(`Faltan ${daysLeft} d`, '')}</div></div>`
         : `<div class="banner ok"><div class="between"><div><b>¡Ya puedes donar!</b><p>Cumples con el intervalo reglamentario desde tu última donación. Tus alertas están activas.</p></div>${badge('Apto hoy', 'ok')}</div></div>`;
@@ -164,7 +174,7 @@ export const flowScreens = {
           ${stat('Donaciones exitosas', n, 'red-text')}
           ${stat('Vidas beneficiadas', n * 3, 'ok-text')}
           ${stat('Última donación', H[0] ? fmtDate(H[0].date) : 'Sin donaciones')}
-          ${stat('Próxima fecha', isDef ? fmtDate(u.deferUntil) : next ? (next <= new Date() ? 'Disponible hoy' : fmtDate(next)) : 'Disponible hoy')}
+          ${stat('Próxima fecha', isReviewDef ? fmtDate(u.deferUntil) : isDef ? 'Pendiente evaluación' : next ? (next <= new Date() ? 'Disponible hoy' : fmtDate(next)) : 'Disponible hoy')}
         </div>
         <div class="between" style="margin:20px 0 12px">
           <h2>Registros de donación</h2>

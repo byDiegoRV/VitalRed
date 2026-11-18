@@ -92,7 +92,7 @@ export const initFirebaseSync = async (onRemoteUpdate) => {
           }
           isRemoteApplying = true;
           try {
-            onRemoteUpdate?.(data.payload);
+            applyRemoteState(data.payload, onRemoteUpdate);
             notifyStatus('online');
           } finally {
             setTimeout(() => { isRemoteApplying = false; }, 50);
@@ -115,6 +115,13 @@ export const initFirebaseSync = async (onRemoteUpdate) => {
   }
 };
 
+export const applyRemoteState = (payload, onRemoteUpdate) => {
+  if (!payload || typeof payload !== 'object') return;
+  if (onRemoteUpdate) {
+    onRemoteUpdate(payload);
+  }
+};
+
 /**
  * Envía el estado actualizado de la aplicación a Firestore para propagarlo a los demás dispositivos.
  */
@@ -131,14 +138,19 @@ export const syncPushState = async (state) => {
       // Sanitizar el estado para Firestore (solo datos sincronizables de la guardia)
       const payload = {
         senderId: CLIENT_ID,
+        users: state.users || [],
         requests: state.requests || [],
         activeReqId: state.activeReqId || null,
         req: state.req || null,
         trip: state.trip || null,
         tripQueue: state.tripQueue || [],
+        tripHistory: state.tripHistory || [],
+        fleet: state.fleet || {},
         inventory: state.inventory || [],
         appts: state.appts || [],
         reviews: state.reviews || [],
+        donations: state.donations || [],
+        lastDonation: state.lastDonation || null,
         campaign: state.campaign || null,
         reserved: state.reserved || [],
         updatedAt: new Date().toISOString(),

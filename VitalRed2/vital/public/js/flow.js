@@ -2,7 +2,7 @@
 // (por la URL, con "atrás" o forzándola), se redirige a la pantalla de la etapa actual con un aviso.
 // Cada regla recibe el estado y devuelve null (permitido) o [ruta destino, mensaje].
 import { getTrip } from './screens-transport.js';
-import { currentUser } from './store.js';
+import { currentUser, normEmail } from './store.js';
 import { activeReq } from './domain.js';
 
 // ---------------- Donante ----------------
@@ -10,10 +10,10 @@ const answered = (s) => Array.isArray(s.triageAns) && s.triageAns.length === 5 &
 
 // idle -> triage -> review -> schedule -> booked -> done   (rejected si el pre-triaje no se aprueba)
 export const donorStage = (s, u) => {
-  const a = s.myAppt && s.myAppt.email === u.email ? s.myAppt : null;
+  const a = s.myAppt && (!s.myAppt.email || normEmail(s.myAppt.email) === normEmail(u.email)) ? s.myAppt : null;
   if (a && a.state === 'Completada') return 'done';
   if (a && a.state !== 'No asistió' && a.state !== 'Rechazada') return 'booked';
-  if (!s.inFlow || s.flowOwner !== u.email) return 'idle';
+  if (!s.inFlow || normEmail(s.flowOwner) !== normEmail(u.email)) return 'idle';
   if (s.triage === true) return 'schedule';
   return answered(s) ? 'review' : 'triage';
 };
@@ -34,7 +34,7 @@ const DONOR_ALLOWED = {
   review: ['d/review', 'd/triage'],
   schedule: ['d/schedule'],
   booked: ['d/qr'],
-  done: ['d/done', 'd/alert']
+  done: ['d/done', 'd/qr', 'd/alert']
 };
 
 const donorRule = (path) => (s) => {
@@ -78,7 +78,10 @@ const RULES = {
     return t.status === 'transito' ? ['t/transit', 'El traslado ya está en tránsito'] : null;
   },
   't/transit': () => transit(),
-  't/manual': () => transit(),
+  't/manual': () => {
+    const t = getTrip();
+    return t ? null : ['t/home', 'No hay un viaje activo'];
+  },
   't/delivery': () => transit(),
   't/logbook': (s) => (s.activeLogbook ? null : ['t/home', 'Aún no hay una bitácora generada']),
 };

@@ -141,6 +141,15 @@ try {
   console.warn('[VitalRed store] Storage sync warning:', e);
 }
 
+export const normEmail = (e) => String(e || '').trim().toLowerCase();
+export const sessionEmail = () => {
+  try { return sessionStorage.getItem(SESSION); } catch { return null; }
+};
+export const currentUser = () => {
+  const s = normEmail(sessionEmail());
+  return s ? state?.users?.find((u) => normEmail(u.email) === s) : undefined;
+};
+
 export const get = () => state;
 export const set = (patch, opts = {}) => {
   const { session, ...rest } = patch;
@@ -161,6 +170,41 @@ export const set = (patch, opts = {}) => {
       state.activeReqId = state.requests[0].id;
     }
     state.req = state.requests.find((r) => r.id === state.activeReqId) || state.requests[0] || null;
+  }
+  if (opts.remote && 'users' in rest && Array.isArray(rest.users)) {
+    const mergedMap = new Map();
+    (state.users || []).forEach((u) => {
+      if (u && u.email) mergedMap.set(normEmail(u.email), u);
+    });
+    rest.users.forEach((u) => {
+      if (u && u.email) {
+        const key = normEmail(u.email);
+        const existing = mergedMap.get(key);
+        mergedMap.set(key, existing ? { ...existing, ...u } : u);
+      }
+    });
+    rest.users = Array.from(mergedMap.values());
+  }
+  if ('appts' in rest && Array.isArray(rest.appts)) {
+    const curMy = rest.myAppt || state.myAppt;
+    if (curMy) {
+      const match = rest.appts.find((a) => (a.id && curMy.id && a.id === curMy.id) || (a.email && curMy.email && normEmail(a.email) === normEmail(curMy.email)));
+      if (match) {
+        rest.myAppt = { ...curMy, ...match };
+      } else if (opts.remote && curMy.id) {
+        rest.myAppt = null;
+        rest.inFlow = false;
+        rest.triage = null;
+        rest.triageAns = null;
+        rest.slot = null;
+      }
+    }
+  }
+  if (opts.remote && 'trip' in rest && rest.trip === null) {
+    const curUser = currentUser();
+    if (curUser?.role === 'transport' && state.trip && (state.trip.status === 'en_transito' || state.trip.status === 'asignada' || state.trip.assignedAt)) {
+      delete rest.trip;
+    }
   }
   Object.assign(state, rest);
   if (!state.req && Array.isArray(state.requests) && state.requests.length) {
@@ -187,11 +231,6 @@ export const reset = () => {
   } catch {}
   state = seed();
 };
-export const sessionEmail = () => {
-  try { return sessionStorage.getItem(SESSION); } catch { return null; }
-};
-export const currentUser = () => state.users.find((u) => u.email === sessionEmail());
-export const normEmail = (e) => String(e || '').trim().toLowerCase();
 
 const readLock = () => {
   try {
@@ -200,7 +239,7 @@ const readLock = () => {
     return null;
   }
 };
-export const lockedByOther = () => { const l = readLock(); return l && l.tab !== TAB && Date.now() - l.ts < 6000 ? l : null; };
+export const lockedByOther = () => null;
 let beat = null;
 export const holdLock = (user) => {
   const write = () => {
@@ -348,6 +387,9 @@ export const updateUserProfile = (email, patch = {}) => {
   } catch (e) {
     console.warn('[VitalRed store] Failed to persist state in updateUserProfile:', e);
   }
+  if (typeof window !== 'undefined' && window.__vitalred_on_local_change) {
+    try { window.__vitalred_on_local_change(state); } catch {}
+  }
   return true;
 };
 
@@ -357,7 +399,10 @@ export const resetUserPassword = (email, newPassword) => {
   }
   const normTarget = normEmail(email);
   const user = state.users.find(
-    (u) => normEmail(u.email) === normTarget || (u.cedula && String(u.cedula).trim().toLowerCase() === normTarget)
+    (u) => normEmail(u.email) === normTarget
+      || (u.cedula && normEmail(u.cedula) === normTarget)
+      || (u.folio && normEmail(u.folio) === normTarget)
+      || (u.license && normEmail(u.license) === normTarget)
   );
   if (!user) {
     return { ok: false, error: 'Usuario no encontrado con el correo o cédula especificado.' };
@@ -371,6 +416,9 @@ export const resetUserPassword = (email, newPassword) => {
     localStorage.setItem(KEY, JSON.stringify(state));
   } catch (e) {
     console.warn('[VitalRed store] Failed to persist state in resetUserPassword:', e);
+  }
+  if (typeof window !== 'undefined' && window.__vitalred_on_local_change) {
+    try { window.__vitalred_on_local_change(state); } catch {}
   }
   return { ok: true };
 };

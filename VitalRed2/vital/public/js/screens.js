@@ -39,7 +39,7 @@ export const screens = {
     render: () => {
       const u = currentUser(), r = get().req, hot = r && ['buscando', 'esperando'].includes(r.status);
       return `${hot ? card(`<div class="between"><div><span class="badge red">CÓDIGO ROJO</span><h3 style="margin-top:6px">${r.units} u. de ${r.blood} · ${r.hospital}</h3></div>${btn('Ver', { go: 'd/alert', cls: 'sm' })}</div>`, 'alert') : ''}
-      ${card(`<div class="center"><div class="avatar">${u.blood || 'O+'}</div><h2>${u.name}</h2>${badge('✓ ' + u.status, u.status.startsWith('Apto') ? 'ok' : 'warn')}</div><div class="grid" style="margin:18px 0"><div class="stat"><b>${u.donations || 0}</b><small>Donaciones</small></div><div class="stat"><b style="color:var(--red)">${(u.donations || 0) * 3}</b><small>Vidas ayudadas</small></div></div><div class="stack">${btn('Recibir alerta de demostración', { act: 'demoAlert' })}${btn('Actualizar pre-triaje', { go: 'd/triage', v: 'ghost' })}</div>`)}`;
+      ${card(`<div class="center"><div class="avatar">${u.blood || 'O+'}</div><h2>${u.name}</h2>${badge('✓ ' + u.status, u.status.startsWith('Apto') ? 'ok' : 'warn')}</div><div class="grid" style="margin:18px 0"><div class="stat"><b>${u.donations || 0}</b><small>Donaciones</small></div><div class="stat"><b style="color:var(--red)">${(u.donations || 0) * 3}</b><small>Vidas ayudadas</small></div></div><div class="stack">${btn('Actualizar pre-triaje', { go: 'd/triage', v: 'ghost' })}</div>`)}`;
     },
   },
   'd/alert': {
@@ -58,7 +58,7 @@ export const screens = {
   },
   'd/qr': {
     role: 'donor',
-    render: () => { const a = get().myAppt || { id: 'VR-2026-8891', time: '08:00' }; return card(`<div class="center stack"><span class="badge ok">¡Cita confirmada!</span><h2>Pase digital QR</h2><div class="qr">${qrPattern(a.id)}</div><b>${a.id}</b><p class="mut">Hospital General · ${a.time} · Ayuno 4 h · Presenta este pase al llegar.</p>${btn('Simular donación completada', { act: 'finishDonation' })}</div>`); },
+    render: () => { const a = get().myAppt || { id: 'VR-2026-8891', time: '08:00' }; return card(`<div class="center stack"><span class="badge ok">¡Cita confirmada!</span><h2>Pase digital QR</h2><div class="qr">${qrPattern(a.id)}</div><b>${a.id}</b><p class="mut">Hospital General · ${a.time} · Ayuno 4 h · Presenta este pase al llegar.</p></div>`); },
   },
   'd/done': {
     role: 'donor',
@@ -77,8 +77,7 @@ export const screens = {
   },
   'm/radar': {
     role: 'medical',
-    render: () => { const r = get().req; if (!r) return statusScreen(icon('radar', 44), 'Sin solicitud', 'Crea una solicitud para activar el radar.', btn('Nueva solicitud', { go: 'm/new' })); return card(`${stepper(REQ_STEPS, STEP_INDEX[r.status])}<div class="center"><h2>Radar transfusional</h2><p class="mut">${r.units} u. de ${r.blood} · radio 2 km</p><div class="radar" id="radarTxt">${r.status === 'buscando' ? 'Buscando…' : r.notified + ' notificados'}</div><p id="radarMsg" class="mut">${r.status === 'esperando' ? 'Donantes en camino…' : 'Estamos alertando donantes compatibles.'}</p></div><div class="stack">${btn('Cancelar solicitud', { act: 'cancelReq', v: 'ghost' })}${btn('Simular: sin respuesta', { go: 'm/none', v: 'ghost', act: 'noResp' })}</div>`); },
-    mount: (root, rerender) => { const r = get().req; if (!r) return; const t1 = setTimeout(() => { if (get().req?.status === 'buscando') { set({ req: { ...get().req, status: 'esperando', notified: 3 } }); rerender(); } }, 3500), t2 = setTimeout(() => { if (get().req?.status === 'esperando') { set({ req: { ...get().req, status: 'programada' } }); rerender(); } }, 8000); return () => { clearTimeout(t1); clearTimeout(t2); }; },
+    render: () => { const r = get().req; if (!r) return statusScreen(icon('radar', 44), 'Sin solicitud', 'Crea una solicitud para activar el radar.', btn('Nueva solicitud', { go: 'm/new' })); return card(`${stepper(REQ_STEPS, STEP_INDEX[r.status])}<div class="center"><h2>Radar transfusional</h2><p class="mut">${r.units} u. de ${r.blood} · radio 2 km</p><div class="radar" id="radarTxt">${r.status === 'buscando' ? 'Buscando…' : r.notified + ' notificados'}</div><p id="radarMsg" class="mut">${r.status === 'esperando' ? 'Donantes en camino…' : 'Estamos alertando donantes compatibles.'}</p></div><div class="stack">${btn('Cancelar solicitud', { act: 'cancelReq', v: 'ghost' })}</div>`); },
   },
   'm/reception': {
     role: 'medical',
