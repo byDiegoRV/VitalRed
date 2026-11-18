@@ -59,7 +59,7 @@ const noTrip = () => emptyState({
   cls: 'in-panel'
 });
 
-const historyItem = (h) => `<div class="item"><div><b>${h.origin} → ${h.dest}</b><br><small class="mut">${h.id} • ${h.date} • ${h.dur}</small></div><div class="row" style="flex:none">${badge(h.temp, h.ok ? 'ok' : 'red')}${btn('Bitácora', { act: 'viewLogbook', id: h.id, v: 'ghost', cls: 'sm' })}</div></div>`;
+const historyItem = (h) => `<div class="item item-wrap"><div><b>${h.origin} → ${h.dest}</b><br><small class="mut">${h.id} • ${h.date} • ${h.dur}</small></div><div class="row" style="flex:none">${badge(h.temp, h.ok ? 'ok' : 'red')}${btn('Bitácora', { act: 'viewLogbook', id: h.id, v: 'ghost', cls: 'sm' })}</div></div>`;
 
 // Componentes reutilizables de la columna lateral derecha (R1 / Tarea 14)
 const carrierQueueCard = (t) => {
@@ -77,7 +77,7 @@ const carrierQueueCard = (t) => {
             <b>${esc(q.origin)} → ${esc(q.dest)}</b>
             ${badge(q.priority || 'ALTA', q.priority === 'CRÍTICA' ? 'red' : 'warn')}
           </div>
-          <small class="mut">${esc(q.id)} · Publicado ${ago(q.publishedAt)}${q.demo ? ' · Demostración' : ''}</small>
+          <small class="mut">${esc(q.id)} · Publicado ${ago(q.publishedAt)}</small>
           ${kv([
             ['Contenido', esc(q.content)],
             ['Distancia · tiempo', `${esc(q.distance)} · ${esc(q.eta)}`],
@@ -95,9 +95,6 @@ const carrierQueueCard = (t) => {
         text: 'Cuando el banco de sangre despache una unidad biológica, aparecerá aquí.',
         cls: 'in-panel'
       })}
-    </div>
-    <div style="margin-top:14px">
-      ${btn('Solicitar viaje de demostración', { act: 'newTrip', v: 'ghost' })}
     </div>
   `);
 };
@@ -165,7 +162,7 @@ export const transportScreens = {
             ['Prioridad', esc(t.priority || 'ALTA')],
             ['Entregar en', esc([t.area, t.bed].filter(Boolean).join(' · ') || t.dest)],
             ['Solicitante', esc(t.requester || 'Hospital destino')],
-            ['Asignado', t.assignedAt ? `${hhmm(t.assignedAt)} · ${esc(t.assignedTo || 'Banco de sangre')}` : 'Demostración']
+            ['Asignado', t.assignedAt ? `${hhmm(t.assignedAt)} · ${esc(t.assignedTo || 'Banco de sangre')}` : 'Banco de Sangre Central']
           ])}
           ${stepper(STEPS, IDX[t.status])}
           <div class="stack" style="margin-top:14px">
@@ -236,7 +233,6 @@ export const transportScreens = {
               ${icon('file', 16)} Upload / Tomar foto
               <input type="file" accept="image/*" data-act="uploadPhotoOrigin" class="sr-only">
             </label>
-            ${btn('Foto de prueba', { act: 'dummyPhotoOrigin', v: 'ghost', cls: 'sm' })}
           </div>
         </div>
       `);
@@ -323,10 +319,7 @@ export const transportScreens = {
           </div>
         ` : ''}
         <div class="stack" style="margin-top:14px">
-          <div class="row">
-            ${btn('Panel Simulador IoT', { act: 'openSimModal', v: 'ghost' })}
-            ${offline ? btn('Registro Manual', { go: 't/manual', v: 'warn' }) : ''}
-          </div>
+          ${btn('Registro Manual por Contingencia IoT', { go: 't/manual', v: offline ? 'warn' : 'ghost' })}
           ${hot && !offline ? btn('Recalibrar y contactar al banco', { act: 'recal', v: 'warn' }) : ''}
           ${btn('Llegada a destino', { go: 't/delivery' })}
         </div>
@@ -402,7 +395,7 @@ export const transportScreens = {
       const photo = t.photoDelivery;
       const meta = t.photoDeliveryMeta || {};
       const ready = Boolean(t.scanOk && t.signOk && photo);
-      return `${stepper(STEPS, 3)}${card(`<h2>Entrega y recepción firmada</h2><p class="mut" style="margin:4px 0 12px">Escanear entrega, adjuntar evidencia fotográfica y obtener firma.</p><div class="stack"><div class="sig ${t.scanOk ? 'ok' : ''}" data-act="toggleDeliveryScan" role="button" tabindex="0" aria-label="Escanear entrega en el área clínica" aria-pressed="${t.scanOk ? 'true' : 'false'}">${icon('clipboard', 20)}&nbsp;${t.scanOk ? 'Código verificado' : 'Escanear entrega en el área clínica'}</div><div class="sig ${t.signOk ? 'ok' : ''}" data-act="toggleDeliverySign" role="button" tabindex="0" aria-label="Firma del personal receptor" aria-pressed="${t.signOk ? 'true' : 'false'}">${icon('user', 20)}&nbsp;${t.signOk ? esc(currentUser().name) : 'Firma del personal receptor'}</div></div>`)}${card(`<h3>Evidencia fotográfica de recepción</h3><p class="mut" style="margin-bottom:10px"><small>Fotografía de la bolsa entregada en quirófano / receptor</small></p><div class="photo-box">${photo ? `<div class="photo-preview"><img src="${photo}" alt="Foto Entrega"><div class="photo-meta"><small><b>REQ:</b> ${esc(t.id)}</small><br><small><b>STAMP:</b> ${meta.timestamp || new Date().toISOString()}</small><br><small><b>DEST:</b> ${esc(t.dest)}</small></div></div>` : '<p class="mut center" style="padding:20px 0">No se ha capturado fotografía</p>'}<div class="row" style="margin-top:10px"><label class="btn ghost sm" style="cursor:pointer;text-align:center">${icon('file', 16)} Upload / Tomar foto<input type="file" accept="image/*" data-act="uploadPhotoDelivery" class="sr-only"></label>${btn('Foto de prueba', { act: 'dummyPhotoDelivery', v: 'ghost', cls: 'sm' })}</div></div>`)}${card(`${btn('Finalizar entrega y ver bitácora', { act: 'deliver', id: 'delBtn', dis: !ready })}`)}`;
+      return `${stepper(STEPS, 3)}${card(`<h2>Entrega y recepción firmada</h2><p class="mut" style="margin:4px 0 12px">Escanear entrega, adjuntar evidencia fotográfica y obtener firma.</p><div class="stack"><div class="sig ${t.scanOk ? 'ok' : ''}" data-act="toggleDeliveryScan" role="button" tabindex="0" aria-label="Escanear entrega en el área clínica" aria-pressed="${t.scanOk ? 'true' : 'false'}">${icon('clipboard', 20)}&nbsp;${t.scanOk ? 'Código verificado' : 'Escanear entrega en el área clínica'}</div><div class="sig ${t.signOk ? 'ok' : ''}" data-act="toggleDeliverySign" role="button" tabindex="0" aria-label="Firma del personal receptor" aria-pressed="${t.signOk ? 'true' : 'false'}">${icon('user', 20)}&nbsp;${t.signOk ? esc(currentUser().name) : 'Firma del personal receptor'}</div></div>`)}${card(`<h3>Evidencia fotográfica de recepción</h3><p class="mut" style="margin-bottom:10px"><small>Fotografía de la bolsa entregada en quirófano / receptor</small></p><div class="photo-box">${photo ? `<div class="photo-preview"><img src="${photo}" alt="Foto Entrega"><div class="photo-meta"><small><b>REQ:</b> ${esc(t.id)}</small><br><small><b>STAMP:</b> ${meta.timestamp || new Date().toISOString()}</small><br><small><b>DEST:</b> ${esc(t.dest)}</small></div></div>` : '<p class="mut center" style="padding:20px 0">No se ha capturado fotografía</p>'}<div class="row" style="margin-top:10px"><label class="btn ghost sm" style="cursor:pointer;text-align:center">${icon('file', 16)} Upload / Tomar foto<input type="file" accept="image/*" data-act="uploadPhotoDelivery" class="sr-only"></label></div></div>`)}${card(`${btn('Finalizar entrega y ver bitácora', { act: 'deliver', id: 'delBtn', dis: !ready })}`)}`;
     }
   },
   't/logbook': {

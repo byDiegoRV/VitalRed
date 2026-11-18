@@ -1,5 +1,5 @@
 import { get, set, reset, currentUser, HOME, ROLES, normEmail, lockedByOther, holdLock, releaseLock, getInventory, checkExpirations, getUnitExpirationInfo, addInventoryItem, updateInventoryItem, removeInventoryItem } from './store.js';
-import { nextCase, nextReqId, nextApptId, activeReq, compatible, eligibleDonors, completeDonation, dispatchUnit, releaseDonor, takeTrip as takeTripDomain, historyOf, patchReq, addReview, CHECKS, deferralDate, deferred, demoTrip, fmtDateTime, ago, calculateExpirationDate } from './domain.js';
+import { nextReqId, nextApptId, activeReq, donorReqFor, compatible, eligibleDonors, completeDonation, dispatchUnit, releaseDonor, takeTrip as takeTripDomain, historyOf, patchReq, addReview, CHECKS, deferralDate, deferred, fmtDateTime, ago, calculateExpirationDate } from './domain.js';
 import { screens } from './screens.js';
 import { DEFAULT_TRIP, getTrip, getHistory } from './screens-transport.js';
 import { passwordIssues, go, toast, confirmModal, notifModal, icon, esc, download } from './ui.js';
@@ -37,7 +37,7 @@ function userNotifications(user) {
 function route() {
   cleanup?.(); cleanup = null;
   let { path, q } = parseHash();
-  if (path !== lastPath) { if (path === 'register' && lastPath !== 'register' && get().reg) set({ reg: null }); lastPath = path; window.scrollTo(0, 0); }
+  if (path !== lastPath) { if (path === 'register' && lastPath !== 'register' && get().reg) set({ reg: null }, { noSync: true }); lastPath = path; window.scrollTo(0, 0); }
   const user = currentUser(), screen = screens[path] || (user ? screens.notfound : null);
   if (!screen) return go('login');
   if (screen.role && (!user || user.role !== screen.role)) { toast('Inicia sesión con el rol correspondiente', 'err'); return go(user ? HOME[user.role] : 'login'); }
@@ -62,9 +62,9 @@ function route() {
         <div class="empty-state error" role="alert" style="margin:40px auto;max-width:540px">
           <div class="empty-icon" style="color:var(--red-solid)">${icon('alert', 48)}</div>
           <h2 class="empty-title">Error al cargar la pantalla</h2>
-          <p class="empty-desc">Ocurrió un error inesperado al procesar los datos de esta vista (${esc(path)}). Puedes restablecer los datos de demostración para volver a un estado consistente.</p>
+          <p class="empty-desc">Ocurrió un error inesperado al procesar los datos de esta vista (${esc(path)}). Puedes restablecer los datos del sistema para volver a un estado consistente.</p>
           <div class="empty-action" style="display:flex;gap:10px;justify-content:center;margin-top:14px">
-            <button class="btn primary sm" data-act="resetDemo" type="button" style="width:auto">Restablecer demo</button>
+            <button class="btn primary sm" data-act="resetDemo" type="button" style="width:auto">Restablecer datos</button>
             <button class="btn ghost sm" onclick="location.reload()" type="button" style="width:auto">Recargar página</button>
           </div>
         </div>
@@ -96,7 +96,7 @@ function route() {
       </header>
       ${user ? `<nav class="tabs">${NAV[user.role].map(([r, l, i]) => `<a href="#/${r}" class="${r === path || NAV_PARENT[path] === r ? 'on' : ''}">${icon(i, 18)}<span>${l}</span></a>`).join('')}</nav>` : ''}
       <main id="main-content" tabindex="-1" class="${screen.wide ? 'wide' : ''}">${mainHtml}</main>
-      <footer>VitalRed v3.0 — Prototipo simulado — <a href="javascript:void(0)" data-act="resetDemo" role="button">Reiniciar demo</a></footer>
+      <footer>VitalRed v3.0 — Plataforma de Emergencias Transfusionales y Logística Biológica NOM-253 — <a href="javascript:void(0)" data-act="resetDemo" role="button">Restablecer datos</a></footer>
     </div>`;
     cleanup?.();
     cleanup = screen.mount?.(app.querySelector('main'), draw) || null;
@@ -156,49 +156,105 @@ const stepAppt = (a, state) => {
   if (state === 'Completada') completeDonation(a);
 };
 
-const sampleSvgPhoto = (title, color) => {
-  const fill = decodeURIComponent(color);
-  const esc = String(title).replace(/[<>&"']/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&#39;' }[c]));
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="300" height="180" viewBox="0 0 300 180"><rect width="300" height="180" fill="${fill}"/><text x="50%" y="45%" dominant-baseline="middle" text-anchor="middle" fill="#ffffff" font-size="16" font-family="sans-serif">${esc}</text><text x="50%" y="65%" dominant-baseline="middle" text-anchor="middle" fill="#ffffff" font-size="12" font-family="sans-serif">VitalRed Evidence</text></svg>`;
-  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+const linkedReqForAppt = (a) => {
+  if (!a) return null;
+  const reqs = get().requests || [];
+  const aEmail = normEmail(a.email);
+  return reqs.find((x) =>
+    (a.reqId && x.id === a.reqId) ||
+    (a.id && x.appt?.id === a.id) ||
+    (aEmail && x.donor?.email && normEmail(x.donor.email) === aEmail)
+  ) || (a.blood ? reqs.find((x) => ['buscando', 'esperando', 'programada', 'completada'].includes(x.status) && compatible(a.blood, x.blood)) : null);
+};
+
+const applyIncomingSync = (remotePayload) => {
+  if (!remotePayload || typeof remotePayload !== 'object') return;
+  const curPath = parseHash().path;
+  const curTrip = getTrip();
+
+  set(remotePayload, { remote: true });
+
+  // Si el transportista está activamente en la pantalla de ruta (t/transit):
+  // No desmontar el mapa de Leaflet ni reiniciar el contador si el viaje sigue activo en la misma etapa
+  if (curPath === 't/transit') {
+    const newTrip = getTrip();
+    if (newTrip && curTrip && newTrip.id === curTrip.id && newTrip.status === curTrip.status) {
+      return;
+    }
+  }
+
+  // Evitar re-renderizado destructivo si el usuario está en login/registro, interactuando con un modal o input
+  if (curPath === 'login' || curPath === 'register' || document.querySelector('.modal') || document.activeElement?.matches?.('input:focus, select:focus, textarea:focus')) {
+    return;
+  }
+
+  route();
 };
 
 const forms = {
   reg() { actions.regNext(); },
   login() {
     clearErrs();
-    const email = val('email').toLowerCase(), password = val('password');
+    const idInput = normEmail(val('email')), password = val('password');
     let ok = true;
-    if (!email) ok = fail('email', 'Ingresa tu correo o cédula');
+    if (!idInput) ok = fail('email', 'Ingresa tu correo o cédula');
     if (!password) ok = fail('password', 'Ingresa tu contraseña');
     if (!ok) return;
-    const user = get().users.find((u) => u.email.toLowerCase() === email && u.password === password);
-    if (!user) { fail('password', 'Credenciales incorrectas'); return toast('Correo o contraseña incorrectos', 'err'); }
+    const user = (get().users || []).find((u) => {
+      const matchId = normEmail(u.email) === idInput
+        || (u.cedula && normEmail(u.cedula) === idInput)
+        || (u.folio && normEmail(u.folio) === idInput)
+        || (u.license && normEmail(u.license) === idInput);
+      return matchId && u.password === password;
+    });
+    if (!user) { fail('password', 'Credenciales incorrectas'); return toast('Correo, cédula o contraseña incorrectos', 'err'); }
     enter(user);
   },
   register(form) {
     clearErrs();
     const inst = form.dataset.role === 'inst', FOLIO = { MED: 'medical', TRA: 'transport', BAN: 'bank' };
-    const role = inst ? FOLIO[val('folio').toUpperCase().slice(0, 3)] : 'donor', donor = role === 'donor';
-    const name = val('name'), email = normEmail(val('email')), password = val('password');
+    const folioRaw = val('folio').toUpperCase();
+    const validFolioFmt = /^(MED|TRA|BAN)-[A-Z0-9]{2,10}$/.test(folioRaw);
+    const role = inst ? (validFolioFmt ? FOLIO[folioRaw.slice(0, 3)] : undefined) : 'donor', donor = role === 'donor';
+    const name = val('name'), rawEmail = val('email'), email = normEmail(rawEmail), password = val('password');
     let ok = true;
     if (name.length < 3) ok = fail('name', 'Ingresa tu nombre completo');
     if (!email) ok = fail('email', 'Campo obligatorio');
     else if (!inst && !/^\S+@\S+\.\S+$/.test(email)) ok = fail('email', 'Correo con formato inválido');
-    if (inst && !role) ok = fail('folio', 'Folio inválido (ej. MED-1024, TRA-2001, BAN-3005)');
+    else if (inst && email.includes('@') && !/^\S+@\S+\.\S+$/.test(email)) ok = fail('email', 'Correo con formato inválido');
+    else if (inst && !email.includes('@') && email.length < 4) ok = fail('email', 'Ingresa un correo válido o una cédula profesional (mín. 4 caracteres)');
     if (email && emailTaken(email)) ok = fail('email', 'Ya existe una cuenta con este dato');
+    if (inst && !role) ok = fail('folio', 'Folio inválido. Usa el formato MED-1024, TRA-2001 o BAN-3005');
+    else if (inst && folioTaken(folioRaw)) ok = fail('folio', 'Este folio de verificación ya está registrado');
     if (passwordIssues(password).length) ok = fail('password', 'La contraseña no cumple los requisitos');
     if (password !== val('password2')) ok = fail('password2', 'Las contraseñas no coinciden');
     if (donor && !(sel('gender') && sel('age') && sel('weight'))) { ok = false; toast('Completa género, edad y peso', 'err'); }
-    if (!donor && !val('hospital')) ok = fail('hospital', 'Indica tu institución');
+    if (!donor && val('hospital').length < 3) ok = fail('hospital', 'Indica tu hospital o institución');
     if (!ok) return;
     const user = { name, email, password, role };
     if (donor) {
-      const risky = [0, 1, 2].some((i) => sel('risk' + i) === 'yes') || sel('fem') === 'yes';
+      const risky = [0, 1, 2].some((i) => sel('risk' + i) === 'yes') || (sel('gender') === 'f' && sel('fem') === 'yes');
       const eligible = sel('age') === 'adult' && sel('weight') === 'ok' && !risky;
-      Object.assign(user, { blood: val('blood'), status: eligible ? 'Apto para donar' : 'Diferido temporalmente', donations: 0, medical: { gender: sel('gender'), age: sel('age'), weight: sel('weight'), blood: val('blood'), risk0: sel('risk0'), risk1: sel('risk1'), risk2: sel('risk2'), fem: sel('fem') } });
-    } else user.hospital = val('hospital');
-    set({ users: [...get().users, user] });
+      Object.assign(user, { blood: val('blood'), status: eligible ? 'Apto para donar' : 'Diferido temporalmente', donations: 0, medical: { gender: sel('gender'), age: sel('age'), weight: sel('weight'), blood: val('blood'), risk0: sel('risk0'), risk1: sel('risk1'), risk2: sel('risk2'), fem: sel('gender') === 'f' ? sel('fem') : undefined } });
+    } else {
+      user.hospital = val('hospital');
+      user.folio = folioRaw;
+      if (role === 'medical') {
+        user.cedula = !email.includes('@') ? rawEmail.toUpperCase() : folioRaw;
+        user.service = 'Urgencias / Guardia';
+        user.shift = 'Matutino';
+      } else if (role === 'transport') {
+        user.license = folioRaw;
+        user.unit = `AMB-${folioRaw.split('-')[1] || '015'}`;
+        user.operatorStatus = 'En servicio';
+        user.shift = 'Matutino';
+      } else if (role === 'bank') {
+        user.position = 'Personal de Banco de Sangre';
+        user.cargo = 'Personal de Banco de Sangre';
+        user.shift = 'Matutino';
+      }
+    }
+    set({ users: [...(get().users || []), user] });
     toast('Cuenta creada con éxito');
     enter(user);
   }
@@ -210,8 +266,27 @@ const missing = (names, d) => {
   if (m.length) toast('Responde todas las preguntas para continuar', 'err');
   return !m.length;
 };
-const emailTaken = (e) => get().users.some((u) => normEmail(u.email) === e);
-const medicalOf = (d) => ({ gender: d.gender, age: d.age, weight: d.weight, blood: d.blood || 'O+', risk0: d.risk0, risk1: d.risk1, risk2: d.risk2, fem: d.fem });
+const emailTaken = (e) => {
+  const n = normEmail(e);
+  if (!n) return false;
+  return (get().users || []).some((u) =>
+    normEmail(u.email) === n
+    || (u.cedula && normEmail(u.cedula) === n)
+    || (u.folio && normEmail(u.folio) === n)
+    || (u.license && normEmail(u.license) === n)
+  );
+};
+const folioTaken = (f) => {
+  const n = normEmail(f);
+  if (!n) return false;
+  return (get().users || []).some((u) =>
+    (u.folio && normEmail(u.folio) === n)
+    || (u.cedula && normEmail(u.cedula) === n)
+    || (u.license && normEmail(u.license) === n)
+    || normEmail(u.email) === n
+  );
+};
+const medicalOf = (d) => ({ gender: d.gender, age: d.age, weight: d.weight, blood: d.blood || 'O+', risk0: d.risk0, risk1: d.risk1, risk2: d.risk2, fem: d.gender === 'f' ? d.fem : undefined });
 
 const REG_RULES = {
   1: (d) => {
@@ -233,12 +308,7 @@ const actions = {
   openSyncModal() {
     openSyncModal((newRoom) => {
       toast(`Sala cambiada a "${newRoom}". Sincronizando...`);
-      initFirebaseSync((remotePayload) => {
-        if (remotePayload && typeof remotePayload === 'object') {
-          set(remotePayload, { remote: true });
-          route();
-        }
-      });
+      initFirebaseSync(applyIncomingSync);
       route();
     });
   },
@@ -316,24 +386,6 @@ const actions = {
       route();
     }
   },
-  simNormal() {
-    set({ temp: 4.2, simMode: 'normal' });
-    toast('Modo Normal (2 - 5.5 °C)');
-    route();
-  },
-  simElevated() {
-    set({ temp: 7.2, simMode: 'heat' });
-    toast('Elevación térmica (>6 °C) inyectada');
-    route();
-  },
-  simOffline() {
-    set({ simMode: 'offline' });
-    toast('Simulación Sensor Offline');
-    route();
-  },
-  openSimModal() {
-    confirmModal('Simulador de Telemetría Térmica IoT', `<div class="stack" style="text-align:left"><p class="mut"><small>Inyección de estados para pruebas de resistencia</small></p><div class="row"><button class="btn ok sm" data-act="simNormal">✔ Rango Normal (2-5.5 °C)</button><button class="btn warn sm" data-act="simElevated">⚠ Elevación térmica (>6 °C)</button></div><div class="row" style="margin-top:8px"><button class="btn ghost sm" data-act="simOffline">✖ Sensor Offline (Pérdida)</button></div></div>`, () => {}, 'Cerrar');
-  },
   eye(el) {
     const i = el.previousElementSibling, show = i.type === 'password';
     i.type = show ? 'text' : 'password';
@@ -342,16 +394,23 @@ const actions = {
     el.setAttribute('aria-label', show ? 'Ocultar contraseña' : 'Mostrar contraseña');
   },
   accept() {
-    const u = currentUser(), r = activeReq();
-    if (r && r.status === 'buscando' && compatible(u.blood, r.blood)) patchReq({ status: 'esperando', donor: { name: u.name, email: u.email, blood: u.blood } });
-    set({ inFlow: true, flowOwner: u.email, triage: null, triageAns: null, myAppt: null, slot: null });
+    const u = currentUser(), r = donorReqFor(u);
+    if (r && r.status === 'buscando' && compatible(u.blood, r.blood)) {
+      patchReq({ status: 'esperando', donor: { name: u.name, email: u.email, blood: u.blood } }, r.id);
+    }
+    set({ inFlow: true, flowOwner: u.email, triage: null, triageAns: null, myAppt: null, slot: null, ...(r?.id ? { activeReqId: r.id } : {}) });
   },
   endFlow() { releaseDonor(currentUser().email); toast('Cita cancelada'); },
   declineFlow() { releaseDonor(currentUser().email); toast('Gracias por avisar. Seguiremos buscando otro donante'); },
   forceAssign(el) {
-    const id = el.dataset.id, req = get().req?.id || 'ST-2048';
-    set({ fleet: { ...(get().fleet || {}), [id]: { state: 'Asignada', req } } });
-    toast(`${id} asignada a la solicitud ${req}`); route();
+    const id = el.dataset.id, r = activeReq() || get().req;
+    const reqId = r?.id || 'ST-2048';
+    set({ fleet: { ...(get().fleet || {}), [id]: { state: 'Asignada', req: reqId } } });
+    if (r) {
+      dispatchUnit({ ...DEFAULT_TRIP, assignedUnit: id }, r.id, { direct: true, unitId: id });
+    }
+    toast(`${id} asignada a la solicitud ${reqId}`);
+    route();
   },
   releaseUnit(el) {
     const f = { ...(get().fleet || {}) }; delete f[el.dataset.id];
@@ -466,27 +525,31 @@ const actions = {
   resetDemo() {
     releaseLock();
     reset();
-    toast('Demostración reiniciada al estado de fábrica');
+    set({});
+    syncPushState(get());
+    toast('Datos del sistema restablecidos');
     go('login');
     route();
-  },
-  demoAlert() {
-    if (activeReq()) return toast('Ya hay una solicitud en curso', 'err');
-    const u = currentUser(), c = nextCase(u?.blood || 'O+'), now = Date.now();
-    set({ req: { id: nextReqId(), ...c, status: 'buscando', notified: eligibleDonors(c.blood).length, demo: true, createdAt: new Date(now).toISOString(), requester: 'Servicio de ' + c.area, log: [{ k: 'creada', at: now }, { k: 'buscando', at: now }] } });
-    go('d/alert');
   },
   snooze() { set({ inFlow: false }); toast('Alerta pospuesta por 15 min', 'ok', { label: 'DESHACER (5s)', run: () => toast('Alerta reactivada') }); },
   filter(el) { set({ filter: el.dataset.v }); route(); },
   unit(el) { const u = document.getElementById('units'); u.textContent = Math.min(9, Math.max(1, +u.textContent + +el.dataset.d)); document.querySelector('main')?.dispatchEvent(new Event('selchange')); },
   pick(el) { set({ selAppt: el.dataset.id }); route(); },
   tab(el) { set({ apptTab: el.dataset.v }); route(); },
-  authorize() { const a = selAppt(); if (!a) return; if (!['Programada', 'Pre-Triaje'].includes(a.state)) return toast('Esta cita ya fue procesada', 'err'); stepAppt(a, 'Extracción'); toast(`Ingreso autorizado: ${a.name}`); route(); },
+  authorize() {
+    const a = selAppt(); if (!a) return;
+    if (!['Programada', 'Pre-Triaje'].includes(a.state)) return toast('Esta cita ya fue procesada', 'err');
+    stepAppt(a, 'Extracción');
+    const r = linkedReqForAppt(a);
+    if (r) patchReq({ appt: { ...(r.appt || { id: a.id, time: a.time }), state: 'Extracción' } }, r.id);
+    toast(`Ingreso autorizado: ${a.name}`);
+    route();
+  },
   approveDonation() {
     const a = selAppt(); if (!a || a.state !== 'Extracción') return toast('Primero autoriza el ingreso de la donación', 'err');
     if (![...document.querySelectorAll('.chkq')].every((c) => c.checked)) return toast('Marca los 4 controles para aprobar la donación', 'err');
-    const r = get().req, linked = r && a.email && r.donor?.email === a.email;
-    const comp = linked ? r.component : 'Sangre total';
+    const r = linkedReqForAppt(a);
+    const comp = r ? r.component : 'Sangre total';
     const today = new Date().toISOString().slice(0, 10);
     addInventoryItem({
       blood: a.blood || 'O+',
@@ -497,19 +560,25 @@ const actions = {
       donorName: a.name,
       notes: `Donación aprobada folio ${a.id}. Controles de calidad NOM-253 aprobados.`
     });
-    const rec = addReview({ apptId: a.id, email: a.email || null, name: a.name, blood: a.blood, decision: 'apta', checks: CHECKS, notes: val('evalNotes'), reqId: linked ? r.id : null, hospital: linked ? r.hospital : null, component: comp });
-    stepAppt(a, 'Completada'); toast(`Donación aprobada: ${a.name}`); go(`b/record?id=${rec.id}`);
+    const rec = addReview({ apptId: a.id, email: a.email || null, name: a.name, blood: a.blood, decision: 'apta', checks: CHECKS, notes: val('evalNotes'), reqId: r ? r.id : null, hospital: r ? r.hospital : null, component: comp });
+    stepAppt(a, 'Completada');
+    const targetReq = linkedReqForAppt(a);
+    if (targetReq) {
+      dispatchUnit(DEFAULT_TRIP, targetReq.id);
+    }
+    toast(`Donación aprobada: ${a.name}`);
+    go(`b/record?id=${rec.id}`);
   },
   denyDonation() {
     const a = selAppt(), ids = [...document.querySelectorAll('.rsn:checked')].map((c) => c.value), notes = val('denyNotes');
     if (!a || ['Completada', 'Rechazada', 'No asistió'].includes(a.state)) return toast('Esta cita ya no se puede evaluar', 'err');
     if (!ids.length) return toast('Selecciona al menos un motivo', 'err');
     if (ids.includes('other') && notes.length < 5) return toast('Describe el motivo en las notas', 'err');
-    const r = get().req, linked = r && a.email && r.donor?.email === a.email, until = deferralDate(ids);
-    const rec = addReview({ apptId: a.id, email: a.email || null, name: a.name, blood: a.blood, decision: 'no_apta', reasons: ids, notes, deferUntil: until, reqId: linked ? r.id : null, hospital: linked ? r.hospital : null, component: linked ? r.component : 'Sangre total' });
+    const r = linkedReqForAppt(a), until = deferralDate(ids);
+    const rec = addReview({ apptId: a.id, email: a.email || null, name: a.name, blood: a.blood, decision: 'no_apta', reasons: ids, notes, deferUntil: until, reqId: r ? r.id : null, hospital: r ? r.hospital : null, component: r ? r.component : 'Sangre total' });
     stepAppt(a, 'Rechazada');
     if (a.email) {
-      set({ users: get().users.map((u) => (u.email === a.email ? { ...u, ...(until ? { status: 'Diferido temporalmente', deferUntil: until, deferBy: 'review' } : {}) } : u)) });
+      set({ users: get().users.map((u) => (normEmail(u.email) === normEmail(a.email) ? { ...u, ...(until ? { status: 'Diferido temporalmente', deferUntil: until, deferBy: 'review' } : {}) } : u)) });
       releaseDonor(a.email, { name: a.name, reasons: ids, notes, at: new Date().toISOString(), reviewId: rec.id });
     }
     toast('Donación denegada y registrada', 'err'); go(`b/record?id=${rec.id}`);
@@ -517,29 +586,47 @@ const actions = {
   filterRec(el) { set({ recFilter: el.dataset.v }); route(); },
   filterDonorHist(el) { set({ donorHistFilter: el.dataset.v }); route(); },
   ackNotice(el) { const id = el.id || el.dataset?.id; set({ reviews: (get().reviews || []).map((r) => (r.id === id ? { ...r, seen: true } : r)) }); route(); },
-  dispatch(el) { const reqId = el?.dataset?.id; const t = dispatchUnit(DEFAULT_TRIP, reqId); if (!t) return toast('La unidad aún no está lista para despacho', 'err'); toast(`Unidad despachada — viaje ${t.id}`); route(); },
+  dispatch(el) { const reqId = el?.dataset?.id; const t = dispatchUnit(DEFAULT_TRIP, reqId, { direct: true }); if (!t) return toast('La unidad aún no está lista para despacho', 'err'); toast(`Unidad despachada — viaje ${t.id}`); route(); },
   say(el) { toast(el.dataset.msg); },
   submitTriage() { set({ triageAns: [0, 1, 2, 3, 4].map((i) => sel('t' + i)) }); go('d/review'); },
   confirmTriage() { const pass = get().triageAns.every((v, i) => v === ['no', 'no', 'no', 'yes', 'yes'][i]); set({ triage: pass, inFlow: pass ? get().inFlow : false }); go(pass ? 'd/schedule' : 'd/rejected'); },
-  regBack() { const r = get().reg || { step: 1, data: {} }; r.data = { ...r.data, ...Object.fromEntries(new FormData(document.getElementById('regForm'))) }; r.step = Math.max(1, r.step - 1); set({ reg: r }); route(); },
+  regBack() {
+    const r = get().reg || { step: 1, data: {} };
+    const fd = Object.fromEntries(new FormData(document.getElementById('regForm')));
+    const data = { ...r.data, ...fd };
+    if (r.step === 4) data.terms = fd.terms;
+    if (data.gender !== 'f') delete data.fem;
+    r.data = data;
+    r.step = Math.max(1, r.step - 1);
+    set({ reg: r }, { noSync: true });
+    route();
+  },
   regNext() {
     const r = get().reg || { step: 1, data: {} }, fd = Object.fromEntries(new FormData(document.getElementById('regForm')));
-    r.data = { ...r.data, ...fd }; if (r.step === 4) r.data.terms = fd.terms;
+    r.data = { ...r.data, ...fd };
+    if (r.step === 4) r.data.terms = fd.terms;
+    if (r.data.gender !== 'f') delete r.data.fem;
     clearErrs(); document.querySelectorAll('.grp-bad').forEach((g) => g.classList.remove('grp-bad'));
-    set({ reg: r }); if (!REG_RULES[r.step](r.data)) return;
-    if (r.step < 4) { r.step++; set({ reg: r }); return route(); }
-    const d = r.data, risky = [0, 1, 2].some((i) => d['risk' + i] === 'yes') || d.fem === 'yes', eligible = d.age === 'adult' && d.weight === 'ok' && !risky;
+    set({ reg: r }, { noSync: true }); if (!REG_RULES[r.step](r.data)) return;
+    if (r.step < 4) { r.step++; set({ reg: r }, { noSync: true }); return route(); }
+    const d = r.data, risky = [0, 1, 2].some((i) => d['risk' + i] === 'yes') || (d.gender === 'f' && d.fem === 'yes'), eligible = d.age === 'adult' && d.weight === 'ok' && !risky;
     const email = normEmail(d.email);
-    if (emailTaken(email)) { r.step = 1; set({ reg: r }); toast('Ya existe una cuenta con este correo', 'err'); return route(); }
+    if (emailTaken(email)) { r.step = 1; set({ reg: r }, { noSync: true }); toast('Ya existe una cuenta con este correo', 'err'); return route(); }
     const other = lockedByOther(); if (other) return toast(busyMsg(other), 'err');
     const user = { name: d.name.trim(), email, password: d.password, role: 'donor', blood: d.blood || 'O+', status: eligible ? 'Apto para donar' : 'Diferido temporalmente', donations: 0, medical: medicalOf(d) };
-    set({ users: [...get().users, user], reg: null }); toast('¡Registro completado!'); enter(user);
+    set({ users: [...(get().users || []), user], reg: null }); toast('¡Registro completado!'); enter(user);
   },
   confirmSlot() {
     const time = sel('slot'); if (!time) return toast('Elige un horario', 'err');
-    const u = currentUser(), r = activeReq(), myAppt = { id: nextApptId(), name: u.name, email: u.email, blood: u.blood, time, state: 'Programada' };
+    const u = currentUser(), r = donorReqFor(u), myAppt = { id: nextApptId(), name: u.name, email: u.email, blood: u.blood, time, state: 'Programada', reqId: r?.id || null };
     set({ myAppt, appts: [myAppt, ...get().appts] });
-    if (r && r.donor?.email === u.email) patchReq({ status: 'programada', appt: { id: myAppt.id, time } });
+    if (r && (normEmail(r.donor?.email) === normEmail(u.email) || r.status === 'buscando')) {
+      patchReq({
+        status: 'programada',
+        donor: r.donor || { name: u.name, email: u.email, blood: u.blood },
+        appt: { id: myAppt.id, time, state: 'Programada' }
+      }, r.id);
+    }
     go('d/qr');
   },
   pdf() { go('d/pdf'); },
@@ -594,9 +681,17 @@ const actions = {
     actions.selectReq(el);
     go('m/radar');
   },
-  cancelReq() {
+  openReception(el) {
+    if (el?.dataset?.id) actions.selectReq(el);
+    go('m/reception');
+  },
+  cancelReq(el) {
+    const targetId = el?.dataset?.id;
+    const prev = (targetId ? (get().requests || []).find((r) => r.id === targetId) : null) || activeReq() || get().req;
+    if (!prev) return;
+    if (targetId) set({ activeReqId: prev.id, req: prev });
     confirmModal('¿Deseas cancelar la búsqueda?', 'Se suspenderá la búsqueda de donantes y el traslado de hemocomponentes. Esta acción afectará la atención del paciente en Quirófano/Urgencias.', () => {
-      const prev = activeReq() || get().req, prevAppts = get().appts, prevMy = get().myAppt;
+      const prevAppts = get().appts, prevMy = get().myAppt;
       if (prev.donor) set({ inFlow: false, triage: null, triageAns: null, myAppt: null, appts: get().appts.filter((a) => !prev.appt || a.id !== prev.appt.id) });
       patchReq({ status: 'cancelada' }, prev.id);
       if (prev.id) {
@@ -621,28 +716,19 @@ const actions = {
       });
     }, 'Sí, cancelar', { danger: true, cancel: 'Continuar búsqueda' });
   },
-  noResp() { patchReq({ status: 'sinrespuesta' }); },
   retry() { const { donor, appt, ...rest } = get().req; set({ req: { ...rest } }); patchReq({ status: 'buscando', notified: eligibleDonors(rest.blood, rest.excluded || []).length }); toast('Ampliando radio a 15 km'); go('m/radar'); },
   external() { toast('Solicitud enviada a banco externo'); go('m/dashboard'); },
-  saveManual() { const t = parseFloat(val('manualTemp')); if (isNaN(t)) return fail('manualTemp', 'Ingresa una temperatura válida'); set({ temp: t }); setTrip('transito'); toast('Registro manual guardado'); go('t/transit'); },
-  heat() { set({ temp: 7.1, simMode: 'heat' }); route(); },
+  saveManual() {
+    const t = parseFloat(val('manualTemp'));
+    if (isNaN(t)) return fail('manualTemp', 'Ingresa una temperatura válida');
+    set({ temp: t });
+    setTrip('transito');
+    const cur = getTrip();
+    if (cur?.reqId) patchReq({ delivery: 'en_ruta' }, cur.reqId);
+    toast('Registro manual guardado');
+    go('t/transit');
+  },
   recal() { set({ temp: 4.6, simMode: 'normal' }); toast('Sensor recalibrado, banco notificado'); route(); },
-  dummyPhotoOrigin() {
-    const t = getTrip();
-    const dataUrl = sampleSvgPhoto(`ORIGEN: ${t.id}`, '%231570ef');
-    const meta = { timestamp: new Date().toISOString(), location: t.origin, id: t.id };
-    set({ trip: { ...t, photoOrigin: dataUrl, photoOriginMeta: meta } });
-    toast('Fotografía de prueba agregada en origen');
-    route();
-  },
-  dummyPhotoDelivery() {
-    const t = getTrip();
-    const dataUrl = sampleSvgPhoto(`ENTREGA: ${t.id}`, '%2312b76a');
-    const meta = { timestamp: new Date().toISOString(), location: t.dest, id: t.id };
-    set({ trip: { ...t, photoDelivery: dataUrl, photoDeliveryMeta: meta } });
-    toast('Fotografía de prueba agregada en recepción');
-    route();
-  },
   uploadPhotoOrigin(el) {
     const file = el.files?.[0];
     if (!file) return;
@@ -686,21 +772,9 @@ const actions = {
   printLogbook() { window.print(); },
   tripCustody() { setTrip('custodia'); },
   tripRoute() { setTrip('transito'); const t = getTrip(); if (t?.reqId) patchReq({ delivery: 'en_ruta' }, t.reqId); },
-  newTrip() { set({ tripQueue: [...(get().tripQueue || []), demoTrip(DEFAULT_TRIP)] }); toast('Viaje de demostración publicado'); route(); },
   takeTrip(el) { const t = takeTripDomain(el.dataset.id, currentUser()); if (!t) return toast('No se pudo tomar el viaje: termina primero el viaje actual', 'err'); toast(`Viaje ${t.id} asignado a ti`); route(); },
-  simStage() {
-    const r = activeReq(); if (!r) return;
-    if (r.status === 'buscando') patchReq({ status: 'esperando', donor: { name: 'Donante de prueba', email: null, blood: r.blood } });
-    else if (r.status === 'esperando') { const a = { id: nextApptId(), name: 'Donante de prueba', blood: r.blood, time: '09:00', state: 'Programada' }; set({ appts: [a, ...get().appts] }); patchReq({ status: 'programada', appt: { id: a.id, time: a.time } }); }
-    else if (r.status === 'programada') { set({ appts: get().appts.map((a) => (a.id === r.appt?.id ? { ...a, state: 'Completada' } : a)) }); addReview({ apptId: r.appt?.id, email: null, name: r.donor?.name || 'Donante de prueba', blood: r.donor?.blood || r.blood, decision: 'apta', checks: CHECKS, notes: 'Simulación de la etapa.', reqId: r.id, hospital: r.hospital, component: r.component }); patchReq({ status: 'completada', completedAt: new Date().toISOString(), delivery: 'preparando' }); }
-    else if (r.delivery === 'preparando') dispatchUnit(DEFAULT_TRIP);
-    else if (r.delivery === 'despachada') takeTripDomain(r.tripId, get().users.find((u) => u.role === 'transport') || { name: 'Transportista de turno', unit: 'AMB-014' });
-    else if (r.delivery === 'asignada') { setTrip('transito'); patchReq({ delivery: 'en_ruta' }); }
-    else if (r.delivery === 'en_ruta') { set({ trip: null }); patchReq({ delivery: 'entregada', deliveredAt: new Date().toISOString() }); }
-    route();
-  },
   sigToggle(el) { const on = el.classList.toggle('ok'); el.textContent = on ? el.dataset.done : el.dataset.todo; document.querySelector('main')?.dispatchEvent(new Event('selchange')); },
-  receive() { patchReq({ status: 'cerrada', receivedAt: new Date().toISOString() }); toast('Recepción confirmada — transfusión iniciada'); go('m/radar'); },
+  receive() { const r = activeReq() || get().req; patchReq({ status: 'cerrada', receivedAt: new Date().toISOString() }, r?.id); toast('Recepción confirmada — transfusión iniciada'); go('m/radar'); },
   saveMedical() {
     const fd = Object.fromEntries(new FormData(document.getElementById('medForm'))), u = currentUser();
     const miss = ['gender', 'age', 'weight', 'risk0', 'risk1', 'risk2'].concat(fd.gender === 'f' ? ['fem'] : []).filter((n) => !fd[n]);
@@ -728,7 +802,11 @@ const CONFIRMS = {
   declineFlow: () => ({ title: '¿Ya no puedes donar?', text: 'Liberaremos tu lugar y avisaremos al hospital para seguir buscando otro donante.', ok: 'Sí, ya no puedo', cancel: 'Seguir con mi cita', danger: true }),
   approveDonation: () => { const a = selAppt(); return [...document.querySelectorAll('.chkq')].every((c) => c.checked) ? { title: '¿Aprobar la donación?', text: `La sangre de <b>${esc(a?.name)}</b> quedará aprobada y se registrará en su historial.`, ok: 'Aprobar donación', ack: 'Confirmo que se verificaron los 4 controles y que la sangre no presenta problemas.' } : null; },
   denyDonation: () => { const a = selAppt(); return document.querySelector('.rsn:checked') ? { title: '¿Denegar la donación?', text: `Se notificará a <b>${esc(a?.name)}</b>, quedará registrado el motivo y la solicitud buscará a otro donante.`, ok: 'Denegar donación', ack: 'Estoy consciente de que esta decisión queda registrada en el historial del donante y en la bitácora.', danger: true } : null; },
-  dispatch: () => ({ title: '¿Despachar la unidad?', text: `Se asignará un viaje al transportista con destino <b>${esc(get().req?.hospital)}</b>.`, ok: 'Despachar unidad', ack: 'Estoy consciente de que la unidad debe viajar entre 2 y 10 °C.' }),
+  dispatch: (el) => {
+    const reqId = el?.dataset?.id || activeReq()?.id || get().req?.id;
+    const r = (get().requests || []).find((x) => x.id === reqId) || get().req;
+    return { title: '¿Despachar la unidad?', text: `Se asignará un viaje al transportista con destino <b>${esc(r?.hospital || 'Hospital General')}</b>.`, ok: 'Despachar unidad', ack: 'Estoy consciente de que la unidad debe viajar entre 2 y 10 °C.' };
+  },
   receive: () => ({ title: '¿Confirmar la recepción?', text: 'Se cerrará el caso y podrás iniciar la transfusión.', ok: 'Confirmar recepción', ack: 'Confirmo que verifiqué el sello, la integridad de la bolsa y la compatibilidad del paciente.' }),
   saveMedical: () => {
     const f = document.getElementById('medForm'), fd = f ? Object.fromEntries(new FormData(f)) : {};
@@ -760,7 +838,7 @@ const CONFIRMS = {
   saveManual: () => (isNaN(parseFloat(val('manualTemp'))) ? null : { title: '¿Guardar la lectura manual?', text: `Se registrará <b>${esc(val('manualTemp'))} °C</b> como temperatura del traslado.`, ok: 'Guardar lectura', ack: 'Confirmo que la temperatura fue medida con un termómetro físico.' }),
   deliver: () => ({ title: '¿Finalizar la entrega?', text: 'Se cerrará el viaje y se generará la bitácora auditada.', ok: 'Finalizar entrega', ack: 'Estoy consciente de que no podré modificar el viaje después de finalizarlo.' }),
   releaseTrip: () => ({ title: '¿Liberar el viaje a cargo?', text: 'El traslado será cancelado y la unidad biológica regresará de inmediato a la lista de viajes disponibles para que otro transportista pueda tomarlo.', ok: 'Liberar viaje', cancel: 'Conservar viaje', danger: true }),
-  resetDemo: () => ({ title: '¿Reiniciar toda la demostración?', text: 'Esta acción es irreversible y eliminará todos los datos creados en el prototipo (solicitudes, unidades, registros e historial).', ok: 'Reiniciar demo', ack: 'Estoy consciente de que se restablecerán todos los datos a su estado inicial', danger: true, cancel: 'Cancelar' }),
+  resetDemo: () => ({ title: '¿Restablecer datos del sistema?', text: 'Esta acción es irreversible y eliminará todos los registros creados (solicitudes, unidades, evaluaciones e historial).', ok: 'Restablecer datos', ack: 'Estoy consciente de que se restablecerán todos los datos a su estado inicial', danger: true, cancel: 'Cancelar' }),
 };
 
 const runClick = (t, e) => {
@@ -774,10 +852,6 @@ document.addEventListener('keydown', (e) => {
 
 document.addEventListener('click', (e) => {
   const t = e.target.closest('[data-act],[data-go]'); if (!t || t.disabled) return;
-  const modal = e.target.closest('.modal');
-  if (modal && t.dataset.act && t.dataset.act.startsWith('sim')) {
-    modal.remove();
-  }
   const c = CONFIRMS[t.dataset.act]?.(t);
   if (c) return confirmModal(c.title, c.text, () => runClick(t, e), c.ok, { ack: c.ack, cancel: c.cancel });
   runClick(t, e);
@@ -818,28 +892,28 @@ if (typeof window !== 'undefined') {
     }
   });
 
-  initFirebaseSync((remotePayload) => {
-    if (remotePayload && typeof remotePayload === 'object') {
-      const curPath = parseHash().path;
-      const curTrip = getTrip();
+  initFirebaseSync(applyIncomingSync);
 
-      set(remotePayload, { remote: true });
-
-      // Si el transportista está activamente en la pantalla de ruta (t/transit):
-      // No desmontar el mapa de Leaflet ni reiniciar el contador si el viaje sigue activo en la misma etapa
-      if (curPath === 't/transit') {
-        const newTrip = getTrip();
-        if (newTrip && curTrip && newTrip.id === curTrip.id && newTrip.status === curTrip.status) {
-          return;
-        }
-      }
-
-      // Evitar re-renderizado destructivo si el usuario está interactuando con un modal o input
-      if (document.querySelector('.modal') || document.activeElement?.matches?.('input:focus, select:focus, textarea:focus')) {
-        return;
-      }
-
-      route();
+  addEventListener('storage', (e) => {
+    if (e.key === 'vitalred-v3' && e.newValue) {
+      try {
+        const p = JSON.parse(e.newValue);
+        applyIncomingSync({
+          users: p.users,
+          requests: p.requests,
+          trip: p.trip,
+          tripQueue: p.tripQueue,
+          tripHistory: p.tripHistory,
+          fleet: p.fleet,
+          inventory: p.inventory,
+          appts: p.appts,
+          reviews: p.reviews,
+          donations: p.donations,
+          lastDonation: p.lastDonation,
+          campaign: p.campaign,
+          reserved: p.reserved,
+        });
+      } catch {}
     }
   });
 }

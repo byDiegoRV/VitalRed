@@ -48,7 +48,7 @@ export const btn = (label, o = {}) => `<button class="btn ${o.v || 'primary'} ${
 export const card = (inner, cls = '') => `<section class="card ${cls}">${inner}</section>`;
 export const badge = (text, color = '') => `<span class="badge ${color}">${text}</span>`;
 export const field = (id, label, type = 'text', ph = '', val = '') => {
-  const input = `<input id="${id}" name="${id}" type="${type}" placeholder="${ph}" value="${val}" autocomplete="off" aria-describedby="${id}-err">`;
+  const input = `<input id="${id}" name="${id}" type="${type}" placeholder="${esc(ph)}" value="${esc(val)}" autocomplete="off" aria-describedby="${id}-err">`;
   const control = type === 'password' ? `<span class="pw">${input}<button type="button" class="eye" data-act="eye" aria-label="Mostrar contraseña" aria-pressed="false">${icon('eye', 18)}</button></span>` : input;
   return `<label class="field"><span>${label}</span>${control}<small class="err" id="${id}-err" role="alert" aria-live="polite"></small></label>`;
 };
